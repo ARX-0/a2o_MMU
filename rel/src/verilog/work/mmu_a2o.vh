@@ -240,5 +240,28 @@
 `define   ptepos_valid      63
 
 
+// ---------------------------------------------------------------------------
+// Power ISA 3.1C radix tree fields (mmq_rtw.v)
+//
+// Radix PDEs/PTEs are big-endian doublewords and the L2 returns them MSB-first,
+// so no byte swap is needed: these are simply Microwatt's little-endian bit
+// numbers inverted, a2o_index = 63 - microwatt_index.  The comment on each line
+// gives the Microwatt mmu.vhdl bit for cross-checking.
+// ---------------------------------------------------------------------------
+`define   radixpos_v         0    // mw 63     valid
+`define   radixpos_leaf      1    // mw 62     leaf (1=PTE, 0=directory PDE)
+`define   radixpos_rts_hi    1    // mw 62:61  RTS high 2 bits (PRTE0)
+`define   radixpos_rpn       8    // mw 55:12  RPN, 44 bits (only 41:12 fit RA)
+`define   radixpos_nlb       8    // mw 55:8   next-level base, 48 bits
+`define   radixpos_rref     55    // mw  8     R, reference
+`define   radixpos_c        56    // mw  7     C, change
+`define   radixpos_rts_lo   56    // mw  7:5   RTS low 3 bits (PRTE0)
+`define   radixpos_ci       58    // mw  5     I, cache inhibited
+`define   radixpos_priv     60    // mw  3     privileged
+`define   radixpos_read     61    // mw  2     read
+`define   radixpos_write    62    // mw  1     write
+`define   radixpos_exec     63    // mw  0     execute
+`define   radixpos_nls      59    // mw  4:0   NLS / RPDS / PRTS, 5 bits
+
 // Do NOT add any defines below this line
 `endif  //_mmu_a2o_vh_
