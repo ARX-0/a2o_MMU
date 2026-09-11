@@ -1,0 +1,235 @@
+# 06 — Verification
+
+[← 05 Out-of-order safety](05-ooo-safety.md) · [Index](00-README.md)
+
+---
+
+## 6.1 Approach
+
+No simulation infrastructure existed in the upstream A2O tree — `rel/build/` contains only
+Vivado synthesis scripts. Two testbenches were written, targeting the two independent ways
+this port could be wrong:
+
+| Bench | Question it answers |
+|---|---|
+| `sim/tb_math.v` | *Is the transcription faithful?* Compares the ported bit manipulation against a direct model of the Microwatt source. |
+| `sim/tb_walk.v` | *Does the machine behave correctly?* Runs complete walks against a behavioural L2 and a real radix tree in memory. |
+
+Both are at module level. Whole-core simulation is not possible in this tree — `mmq.v`
+instantiates Xilinx `RAMB16` primitives that are not present, which is why the lint check
+compares *error counts* against the golden tree rather than expecting zero.
+
+## 6.2 Fidelity: `tb_math.v`
+
+The strongest correctness argument available for a port is a differential test against the
+source. `tb_math.v` instantiates the four generators verbatim as written in `mmq_rtw.v`, and
+alongside them a direct little-endian model transcribed straight from `mmu.vhdl`:
+
+```verilog
+always @(*) begin
+   // addrshifter: (addr(61 downto 12) >> shift)(15 downto 0)   mmu.vhdl:1380
+   mw_addrsh = (addr[61:12] >> shift) & 16'hffff;
+   // addrmaskgen: seed 0x001f, set bit i for 5<=i<mask_size    mmu.vhdl:1417
+   mw_mask = 16'h001f;
+   for (bi = 5; bi <= 15; bi = bi + 1)
+      if (bi < masksize) mw_mask[bi] = 1'b1;
+   // finalmaskgen: bit i set iff i < shift                     mmu.vhdl:1436
+   mw_fm30 = 0;
+   for (bi = 0; bi <= 29; bi = bi + 1) if (bi < shift) mw_fm30[bi] = 1'b1;
+   ...
+end
+```
+
+The same effective address is presented in both bit orders, reversal helper functions
+convert between them, and 400 random `(address, shift, mask_size)` vectors are compared.
+`shift` ranges 0–47 and `masksize` covers the legal 5–16 index widths.
+
+```
+=== ported bit-math vs Microwatt reference model ===
+PASS: 400 random vectors, all four generators match
+```
+
+## 6.3 Behaviour: `tb_walk.v`
+
+The bench builds a **real radix tree in a behavioural memory** and models the L2: it grants
+one request at a time, returns the correct quadword three cycles later with the appropriate
+core tag, and can be told to stall indefinitely.
+
+Tree parameters are chosen so the walk is genuinely four levels deep:
+
+```
+RTS  = 17  →  48-bit address space
+RPDS = 9   →  shift after the segment check is 17 + 19 − 9 = 27
+             levels sit at shift 27 / 18 / 9 / 0
+Index bits:  L1 = EA[47:39]   L2 = EA[38:30]   L3 = EA[29:21]   L4 = EA[20:12]
+```
+
+An earlier version used `RTS = 8`, which gives only a 39-bit space and a *three*-level tree —
+the walk correctly raised a segment error because the chosen address was out of range. Worth
+recording: the first failure the bench reported was a bug in the bench, and the RTL was
+right.
+
+### Scenarios
+
+| # | Scenario | Asserts |
+|---|---|---|
+| 1 | Cold 4-level walk | 6 loads (PATE1 + PRTE0 + 4 levels); correct RPN, permissions and page size |
+| 2 | Warm 4-level walk | 4 loads — the root cache is effective |
+| 3 | Leaf with V=0 | `pt_fault` raised, nothing installed |
+| 4 | Leaf with R=0 | `rc_err` raised — hardware never sets R |
+| 5 | Directory with NLS=2 | `badtree` raised (below the legal minimum of 5) |
+| 6 | Quadrant 1 address | `segerror` raised |
+| 7 | **Flush mid-walk** | Reload still returned with V=0 — EMQ entry freed, nothing installed (P0-1, P0-3) |
+| 8 | **Invalidate mid-walk** | Walk discarded, reload still returned (P0-4) |
+| 9 | **Radix disabled** | Zero loads, zero reloads — the Book-E path is unaffected |
+| 10 | **Guest-mode walk** | Refused with `lrat_miss`, nothing installed (P2-11) |
+| 11 | **Watchdog** | L2 stalled forever; timeout fires, machine check raised, EMQ freed (P1-7) |
+
+Scenarios 7–11 are the ones that matter most: they test the out-of-order safety machinery
+from [05](05-ooo-safety.md), which is exactly the part a purely algorithmic port would omit.
+
+### Output
+
+```
+=== mmq_rtw end-to-end walk ===
+  loads issued = 6 (expect 6: PATE1 + PRTE0 + 4 levels)
+  RPN correct: 00000800
+  usxwr correct: 111111
+  loads issued = 4 (expect 4: roots cached)
+  pt_fault raised correctly, V=0 install
+  rc_err raised correctly (R=0, hardware never sets it)
+  badtree raised correctly
+  segerror raised correctly for quadrant 1
+  flush mid-walk: reload returned with V=0, EMQ freed (P0-1/P0-3 OK)
+  invalidate mid-walk: walk discarded, reload returned (P0-4 OK)
+  radix disabled: no loads, no reload -- Book-E path unaffected
+  guest-mode walk refused with lrat_miss, nothing installed (P2-11 OK)
+  watchdog fired after 4097 cycles, mchk raised, EMQ freed (P1-7 OK)
+
+PASS: 11 walk scenarios, no failures
+```
+
+The load addresses in a cold walk trace exactly as designed — `0x100008` (partition table),
+`0x200000` (process table), then `0x300008`, `0x400010`, `0x500018`, `0x600020` for the four
+tree levels — each index landing where the mask arithmetic predicts.
+
+## 6.4 Bugs found by the benches
+
+Three real defects were caught, all in the RTL. They are recorded because they are the
+evidence that the verification is doing work rather than confirming what was already
+believed.
+
+### 1. Barrel shifter included two bits it should not have
+
+The shifter input is `addr(61:12)`, so EA63:62 must not be visible — Microwatt shifts in
+zeros from above bit 61. The first version padded the vector with 32 zeros, leaving those two
+bits inside the shift window. For any shift of 35 or more they entered the index and the
+result diverged from the reference.
+
+`tb_math.v` reported 93 mismatches out of 400 vectors, all at shift ≥ 35. The fix is a
+34-zero pad. This would have been extremely difficult to find in a full-system simulation —
+it only manifests on very large address spaces.
+
+### 2. The kill check did not gate wait-state exits
+
+The flush and reservation tests were applied before *issuing* each load, but not on the way
+*out* of the wait states. A flush or invalidate arriving during the final `ReadWait`
+therefore let the walk run to completion and install a translation that should have been
+discarded.
+
+Scenarios 7 and 8 both failed with "installed V=1 after flush". The fix tests the kill
+condition on the exit from every wait state, guarded so it never abandons an in-flight load.
+
+### 3. The watchdog measured the wrong interval
+
+Written to count only while a load was outstanding, it did not cover a request that the LSU
+arbiter never *grants* — an equally complete hang. Scenario 11 stalled the L2 model at the
+grant stage and the watchdog never fired.
+
+The fix measures **time since last progress** and trips from the request states as well as
+the wait states. It now fires at 4097 cycles as designed.
+
+### A fourth, in the testbench
+
+Two `always @(posedge clk)` blocks both drove the L2 model's data-valid signal — a race that
+Icarus resolves inconsistently, making the third load of a walk vanish. Merged into one
+block. Recorded because it cost real debugging time and looked exactly like an RTL bug.
+
+## 6.5 Lint
+
+Verilator, with the house-style warnings suppressed (`LITENDIAN` — the entire A2O codebase is
+MSB-first — and `DECLFILENAME`):
+
+- `mmq_rtw.v` standalone: **no errors, no warnings** other than intentionally-unused ports
+  carried for interface parity with `mmq_htw`, and the PTCR bits the architecture ignores.
+- Full `mmq` hierarchy: **3 errors, identical to pristine upstream**, all pre-existing
+  references to absent Xilinx `RAMB16` primitives.
+
+The two failure modes A2O's coding style is most prone to — an incomplete sensitivity list
+and a missing default assignment in a combinational block — would both surface as lint
+warnings, and do not.
+
+## 6.6 Reproducing
+
+```bash
+rel/src/verilog/sim/run_rtw_tests.sh
+```
+
+Runs lint and both benches in about five seconds. Requires `verilator` and `iverilog`.
+
+To confirm the integration introduced no new lint errors:
+
+```bash
+git worktree add /tmp/a2o-upstream master
+cd /tmp/a2o-upstream/rel/src/verilog && verilator --lint-only --language 1364-2005 \
+    -Wno-fatal -Wno-LITENDIAN -Wno-DECLFILENAME -Wno-TIMESCALEMOD \
+    -Itrilib -Iwork work/mmq.v --top-module mmq 2>&1 | grep -c '^%Error'   # 3
+cd rel/src/verilog                   && verilator ... same ...             # 3
+git worktree remove /tmp/a2o-upstream
+```
+
+## 6.7 Reviewing the change set against upstream
+
+When a port touches a handful of places inside several 4000-line files, the question that
+matters is not *"what changed in the last commit"* but *"what has this tree accumulated
+since upstream"*. This branch is cut directly from upstream `master` and adds nothing
+unrelated, so a plain `git diff` answers exactly that:
+
+```bash
+git diff --stat master..a2o_MMU            # per-file line counts
+git diff master..a2o_MMU                   # whole change set, one patch
+git diff master..a2o_MMU -- '*mmq_tlb_cmp.v'   # one file
+git log --oneline master..a2o_MMU          # the six commits, in dependency order
+```
+
+The commits are layered so that each answers one question on its own — field definitions,
+the walker, the SPR, the integration, the benches, this documentation — and the first four
+can be read in order as the argument for the design.
+
+For side-by-side tooling (`vimdiff`, `meld`, `diff -r`), materialise upstream as a real
+directory:
+
+```bash
+git worktree add /tmp/a2o-upstream master
+diff -r /tmp/a2o-upstream/rel/src/verilog/work rel/src/verilog/work
+git worktree remove /tmp/a2o-upstream
+```
+
+## 6.8 What the verification does *not* cover
+
+Stated plainly:
+
+- **No whole-core simulation.** Everything is `mmq_rtw` in isolation with a behavioural L2.
+  The handoff from `mmq_tlb_cmp`, the walker mux in `mmq.v`, and the exception merge are
+  lint-clean but have **not been simulated**.
+- **No FPGA run.** No timing closure or synthesis results.
+- **No software test.** Microwatt's `reference/mmu_test/mmu.c` sets up a real radix tree and
+  would be the natural next step, but requires a bootable core-level simulation.
+- **`mmq_inval.v` deadlock detours not re-verified** (P0-5).
+- **Guest mode untested beyond the refusal path**, because guest mode is refused.
+- **Two-context concurrency is not stress-tested.** Both contexts exist and are statically
+  bound to threads, but no scenario runs two walks simultaneously.
+
+---
+
+[← Back to index](00-README.md)
