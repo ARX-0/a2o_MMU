@@ -796,7 +796,7 @@ module xu_spr_cspr
 		, ex2_mas1_re    , ex2_mas2_re    , ex2_mas2u_re   , ex2_mas3_re
 		, ex2_mas4_re    , ex2_mas5_re    , ex2_mas5_mas6_re, ex2_mas6_re
 		, ex2_mas7_re    , ex2_mas7_mas3_re, ex2_mas8_re    , ex2_mas8_mas1_re
-		, ex2_mmucfg_re  , ex2_mmucr0_re  , ex2_mmucr1_re  , ex2_mmucr2_re
+		, ex2_mmucfg_re  , ex2_mmucr0_re, ex2_ptcr_re  , ex2_mmucr1_re  , ex2_mmucr2_re
 		, ex2_mmucr3_re  , ex2_mmucsr0_re , ex2_pesr_re    , ex2_pid_re
 		, ex2_ppr32_re   , ex2_sramd_re   , ex2_tlb0cfg_re , ex2_tlb0ps_re
 		, ex2_xucr2_re   , ex2_xudbg0_re  , ex2_xudbg1_re  , ex2_xudbg2_re  ;
@@ -819,7 +819,7 @@ module xu_spr_cspr
 		, ex2_lsucr0_we  , ex2_mas0_we    , ex2_mas0_mas1_we, ex2_mas1_we
 		, ex2_mas2_we    , ex2_mas2u_we   , ex2_mas3_we    , ex2_mas4_we
 		, ex2_mas5_we    , ex2_mas5_mas6_we, ex2_mas6_we    , ex2_mas7_we
-		, ex2_mas7_mas3_we, ex2_mas8_we    , ex2_mas8_mas1_we, ex2_mmucr0_we
+		, ex2_mas7_mas3_we, ex2_mas8_we    , ex2_mas8_mas1_we, ex2_mmucr0_we, ex2_ptcr_we
 		, ex2_mmucr1_we  , ex2_mmucr2_we  , ex2_mmucr3_we  , ex2_mmucsr0_we
 		, ex2_pesr_we    , ex2_pid_we     , ex2_ppr32_we   , ex2_xucr2_we
 		, ex2_xudbg0_we  ;
@@ -850,7 +850,7 @@ module xu_spr_cspr
 		, ex2_mas1_rdec  , ex2_mas2_rdec  , ex2_mas2u_rdec , ex2_mas3_rdec
 		, ex2_mas4_rdec  , ex2_mas5_rdec  , ex2_mas5_mas6_rdec, ex2_mas6_rdec
 		, ex2_mas7_rdec  , ex2_mas7_mas3_rdec, ex2_mas8_rdec  , ex2_mas8_mas1_rdec
-		, ex2_mmucfg_rdec, ex2_mmucr0_rdec, ex2_mmucr1_rdec, ex2_mmucr2_rdec
+		, ex2_mmucfg_rdec, ex2_mmucr0_rdec, ex2_ptcr_rdec, ex2_mmucr1_rdec, ex2_mmucr2_rdec
 		, ex2_mmucr3_rdec, ex2_mmucsr0_rdec, ex2_pesr_rdec  , ex2_pid_rdec
 		, ex2_ppr32_rdec , ex2_sramd_rdec , ex2_tlb0cfg_rdec, ex2_tlb0ps_rdec
 		, ex2_xucr2_rdec , ex2_xudbg0_rdec, ex2_xudbg1_rdec, ex2_xudbg2_rdec;
@@ -883,7 +883,7 @@ module xu_spr_cspr
 		, ex2_lsucr0_wdec, ex2_mas0_wdec  , ex2_mas0_mas1_wdec, ex2_mas1_wdec
 		, ex2_mas2_wdec  , ex2_mas2u_wdec , ex2_mas3_wdec  , ex2_mas4_wdec
 		, ex2_mas5_wdec  , ex2_mas5_mas6_wdec, ex2_mas6_wdec  , ex2_mas7_wdec
-		, ex2_mas7_mas3_wdec, ex2_mas8_wdec  , ex2_mas8_mas1_wdec, ex2_mmucr0_wdec
+		, ex2_mas7_mas3_wdec, ex2_mas8_wdec  , ex2_mas8_mas1_wdec, ex2_mmucr0_wdec, ex2_ptcr_wdec
 		, ex2_mmucr1_wdec, ex2_mmucr2_wdec, ex2_mmucr3_wdec, ex2_mmucsr0_wdec
 		, ex2_pesr_wdec  , ex2_pid_wdec   , ex2_ppr32_wdec , ex2_xucr2_wdec
 		, ex2_xudbg0_wdec;
@@ -1826,6 +1826,8 @@ wire [0:0] core_event;
 	assign ex2_mas8_mas1_rdec  = (ex2_instr[11:20] == 10'b1110101010);   //  349
 	assign ex2_mmucfg_rdec     = (ex2_instr[11:20] == 10'b1011111111);   // 1015
 	assign ex2_mmucr0_rdec     = (ex2_instr[11:20] == 10'b1110011111);   // 1020
+	// PTCR, Power ISA 3.1C radix root pointer. 464 is free in A2O (PLAN.md 3.5).
+	assign ex2_ptcr_rdec       = (ex2_instr[11:20] == 10'b1000001110);   //  464
 	assign ex2_mmucr1_rdec     = (ex2_instr[11:20] == 10'b1110111111);   // 1021
 	assign ex2_mmucr2_rdec     = (ex2_instr[11:20] == 10'b1111011111);   // 1022
 	assign ex2_mmucr3_rdec     = (ex2_instr[11:20] == 10'b1111111111);   // 1023
@@ -1902,6 +1904,7 @@ wire [0:0] core_event;
 	assign ex2_mas8_mas1_re    =  ex2_mas8_mas1_rdec;
 	assign ex2_mmucfg_re       =  ex2_mmucfg_rdec;
 	assign ex2_mmucr0_re       =  ex2_mmucr0_rdec;
+	assign ex2_ptcr_re         =  ex2_ptcr_rdec;
 	assign ex2_mmucr1_re       =  ex2_mmucr1_rdec;
 	assign ex2_mmucr2_re       =  ex2_mmucr2_rdec;
 	assign ex2_mmucr3_re       =  ex2_mmucr3_rdec;
@@ -1972,6 +1975,7 @@ wire [0:0] core_event;
 	assign ex2_mas8_wdec       = ex2_mas8_rdec;
 	assign ex2_mas8_mas1_wdec  = ex2_mas8_mas1_rdec;
 	assign ex2_mmucr0_wdec     = ex2_mmucr0_rdec;
+	assign ex2_ptcr_wdec       = ex2_ptcr_rdec;
 	assign ex2_mmucr1_wdec     = ex2_mmucr1_rdec;
 	assign ex2_mmucr2_wdec     = ex2_mmucr2_rdec;
 	assign ex2_mmucr3_wdec     = ex2_mmucr3_rdec;
@@ -2037,6 +2041,7 @@ wire [0:0] core_event;
 	assign ex2_mas8_we         =  ex2_mas8_wdec;
 	assign ex2_mas8_mas1_we    =  ex2_mas8_mas1_wdec;
 	assign ex2_mmucr0_we       =  ex2_mmucr0_wdec;
+	assign ex2_ptcr_we         =  ex2_ptcr_wdec;
 	assign ex2_mmucr1_we       =  ex2_mmucr1_wdec;
 	assign ex2_mmucr2_we       =  ex2_mmucr2_wdec;
 	assign ex2_mmucr3_we       =  ex2_mmucr3_wdec;
@@ -2072,7 +2077,7 @@ wire [0:0] core_event;
                            | ex2_mas2u_we         | ex2_mas3_we          | ex2_mas4_we
                            | ex2_mas5_we          | ex2_mas5_mas6_we     | ex2_mas6_we
                            | ex2_mas7_we          | ex2_mas7_mas3_we     | ex2_mas8_we
-                           | ex2_mas8_mas1_we     | ex2_mmucr0_we        | ex2_mmucr1_we
+                           | ex2_mas8_mas1_we     | ex2_ptcr_we        | ex2_mmucr0_we        | ex2_mmucr1_we
                            | ex2_mmucr2_we        | ex2_mmucr3_we        | ex2_mmucsr0_we
                            | ex2_pesr_we          | ex2_pid_we           | ex2_ppr32_we
                            | ex2_xucr2_we         | ex2_xudbg0_we        );
@@ -2098,7 +2103,7 @@ wire [0:0] core_event;
                            | ex2_mas3_re          | ex2_mas4_re          | ex2_mas5_re
                            | ex2_mas5_mas6_re     | ex2_mas6_re          | ex2_mas7_re
                            | ex2_mas7_mas3_re     | ex2_mas8_re          | ex2_mas8_mas1_re
-                           | ex2_mmucfg_re        | ex2_mmucr0_re        | ex2_mmucr1_re
+                           | ex2_mmucfg_re        | ex2_ptcr_re        | ex2_mmucr0_re        | ex2_mmucr1_re
                            | ex2_mmucr2_re        | ex2_mmucr3_re        | ex2_mmucsr0_re
                            | ex2_pesr_re          | ex2_pid_re           | ex2_ppr32_re
                            | ex2_sramd_re         | ex2_tlb0cfg_re       | ex2_tlb0ps_re
@@ -2422,7 +2427,7 @@ wire [0:0] core_event;
                            | ex2_iudbg0_rdec      | ex2_iudbg1_rdec      | ex2_iudbg2_rdec
                            | ex2_iulfsr_rdec      | ex2_iullcr_rdec      | ex2_ivpr_rdec
                            | ex2_lesr1_rdec       | ex2_lesr2_rdec       | ex2_lpidr_rdec
-                           | ex2_lsucr0_rdec      | ex2_mmucr0_rdec      | ex2_mmucr1_rdec
+                           | ex2_lsucr0_rdec      | ex2_ptcr_rdec        | ex2_mmucr0_rdec      | ex2_mmucr1_rdec
                            | ex2_mmucr2_rdec      | ex2_pesr_rdec        | ex2_pid_rdec
                            | ex2_ppr32_rdec       | ex2_sramd_rdec       | ex2_xucr2_rdec
                            | ex2_xudbg0_rdec      | ex2_xudbg1_rdec      | ex2_xudbg2_rdec      |
@@ -2450,7 +2455,7 @@ wire [0:0] core_event;
                            | ex2_iucr0_wdec       | ex2_iucr1_wdec       | ex2_iucr2_wdec
                            | ex2_iudbg0_wdec      | ex2_iulfsr_wdec      | ex2_iullcr_wdec
                            | ex2_ivpr_wdec        | ex2_lesr1_wdec       | ex2_lesr2_wdec
-                           | ex2_lpidr_wdec       | ex2_lsucr0_wdec      | ex2_mmucr0_wdec
+                           | ex2_lpidr_wdec       | ex2_lsucr0_wdec      | ex2_ptcr_wdec        | ex2_mmucr0_wdec
                            | ex2_mmucr1_wdec      | ex2_mmucr2_wdec      | ex2_pesr_wdec
                            | ex2_pid_wdec         | ex2_ppr32_wdec       | ex2_xucr2_wdec
                            | ex2_xudbg0_wdec      |
@@ -2474,7 +2479,7 @@ wire [0:0] core_event;
                            | ex2_iucr2_re         | ex2_iudbg0_re        | ex2_iudbg1_re
                            | ex2_iudbg2_re        | ex2_iulfsr_re        | ex2_iullcr_re
                            | ex2_ivpr_re          | ex2_lpidr_re         | ex2_lsucr0_re
-                           | ex2_mmucr0_re        | ex2_mmucr1_re        | ex2_mmucr2_re
+                           | ex2_ptcr_re        | ex2_mmucr0_re        | ex2_mmucr1_re        | ex2_mmucr2_re
                            | ex2_xucr2_re         | ex2_xudbg0_re        | ex2_xudbg1_re
                            | ex2_xudbg2_re        |
                            ex2_slowspr_range_hypv |
@@ -2496,7 +2501,7 @@ wire [0:0] core_event;
                            | ex2_imr_we           | ex2_iucr0_we         | ex2_iucr1_we
                            | ex2_iucr2_we         | ex2_iudbg0_we        | ex2_iulfsr_we
                            | ex2_iullcr_we        | ex2_ivpr_we          | ex2_lpidr_we
-                           | ex2_lsucr0_we        | ex2_mmucr0_we        | ex2_mmucr1_we
+                           | ex2_lsucr0_we        | ex2_ptcr_we        | ex2_mmucr0_we        | ex2_mmucr1_we
                            | ex2_mmucr2_we        | ex2_xucr2_we         | ex2_xudbg0_we        |
                            ex2_slowspr_range_hypv |
                         |(tspr_cspr_hypv_mtspr & ex2_tid));
@@ -2538,7 +2543,7 @@ wire [0:0] core_event;
                            | ex2_mas3_rdec        | ex2_mas4_rdec        | ex2_mas5_rdec
                            | ex2_mas5_mas6_rdec   | ex2_mas6_rdec        | ex2_mas7_rdec
                            | ex2_mas7_mas3_rdec   | ex2_mas8_rdec        | ex2_mas8_mas1_rdec
-                           | ex2_mmucfg_rdec      | ex2_mmucr0_rdec      | ex2_mmucr1_rdec
+                           | ex2_mmucfg_rdec      | ex2_ptcr_rdec        | ex2_mmucr0_rdec      | ex2_mmucr1_rdec
                            | ex2_mmucr2_rdec      | ex2_mmucr3_rdec      | ex2_mmucsr0_rdec
                            | ex2_pesr_rdec        | ex2_pid_rdec         | ex2_ppr32_rdec
                            | ex2_sramd_rdec       | ex2_tlb0cfg_rdec     | ex2_tlb0ps_rdec
@@ -2576,7 +2581,7 @@ wire [0:0] core_event;
                            | ex2_mas2u_wdec       | ex2_mas3_wdec        | ex2_mas4_wdec
                            | ex2_mas5_wdec        | ex2_mas5_mas6_wdec   | ex2_mas6_wdec
                            | ex2_mas7_wdec        | ex2_mas7_mas3_wdec   | ex2_mas8_wdec
-                           | ex2_mas8_mas1_wdec   | ex2_mmucr0_wdec      | ex2_mmucr1_wdec
+                           | ex2_mas8_mas1_wdec   | ex2_ptcr_wdec        | ex2_mmucr0_wdec      | ex2_mmucr1_wdec
                            | ex2_mmucr2_wdec      | ex2_mmucr3_wdec      | ex2_mmucsr0_wdec
                            | ex2_pesr_wdec        | ex2_pid_wdec         | ex2_ppr32_wdec
                            | ex2_xucr2_wdec       | ex2_xudbg0_wdec      |
@@ -2603,7 +2608,7 @@ wire [0:0] core_event;
                            | ex2_lperu_re         | ex2_lpidr_re         | ex2_lratcfg_re
                            | ex2_lratps_re        | ex2_lsucr0_re        | ex2_mas5_re
                            | ex2_mas5_mas6_re     | ex2_mas8_re          | ex2_mas8_mas1_re
-                           | ex2_mmucfg_re        | ex2_mmucr0_re        | ex2_mmucr1_re
+                           | ex2_mmucfg_re        | ex2_ptcr_re        | ex2_mmucr0_re        | ex2_mmucr1_re
                            | ex2_mmucr2_re        | ex2_mmucsr0_re       | ex2_tlb0cfg_re
                            | ex2_tlb0ps_re        | ex2_xucr2_re         | ex2_xudbg0_re
                            | ex2_xudbg1_re        | ex2_xudbg2_re        |
@@ -2629,7 +2634,7 @@ wire [0:0] core_event;
                            | ex2_ivpr_we          | ex2_lper_we          | ex2_lperu_we
                            | ex2_lpidr_we         | ex2_lsucr0_we        | ex2_mas5_we
                            | ex2_mas5_mas6_we     | ex2_mas8_we          | ex2_mas8_mas1_we
-                           | ex2_mmucr0_we        | ex2_mmucr1_we        | ex2_mmucr2_we
+                           | ex2_ptcr_we        | ex2_mmucr0_we        | ex2_mmucr1_we        | ex2_mmucr2_we
                            | ex2_mmucsr0_we       | ex2_xucr2_we         | ex2_xudbg0_we        |
                            ex2_slowspr_range_hypv |
                         |(tspr_cspr_hypv_mtspr & ex2_tid));

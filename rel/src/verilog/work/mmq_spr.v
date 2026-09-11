@@ -147,6 +147,7 @@ module mmq_spr(
    output                               mmucfg_twc,
    output                               tlb0cfg_pt,
    output                               tlb0cfg_ind,
+   output                               tlb0cfg_radix,
    output                               tlb0cfg_gtwe,
    output [0:`MESR1_WIDTH+`MESR2_WIDTH-1] mmq_spr_event_mux_ctrls,
 
@@ -260,6 +261,9 @@ module mmq_spr(
    input [0:`MM_THREADS-1]              tlb_lper_we,
 
    output [0:`LPID_WIDTH-1]             lpidr,
+   output [0:63]                        ptcr,
+   output                               ptcr_wr,
+   output                               pid_wr,
    output [0:`LPID_WIDTH-1]             ac_an_lpar_id,
 
    output                               spr_dbg_match_64b,
@@ -333,6 +337,11 @@ module mmq_spr(
       parameter [0:9]                      Spr_Addr_PID = 10'b0000110000;
       //constant Spr_Addr_LPID : std_ulogic_vector(0 to 9) :=  1001111110 ; -- dec 638
       parameter [0:9]                      Spr_Addr_LPID = 10'b0101010010;
+      // Power ISA 3.1C radix root pointer.  464 is verified free in A2O -- nothing
+      // in 352-436 or 448-511 is decoded anywhere in the core (PLAN.md 3.5/3.7).
+      // Only PTCR[55:12] is used, as the partition-table base; PATS and LPID are
+      // ignored, exactly as upstream Microwatt (mmu.vhdl:1846).
+      parameter [0:9]                      Spr_Addr_PTCR = 10'b0111010000;
       parameter [0:9]                      Spr_Addr_MMUCR0 = 10'b1111111100;
       parameter [0:9]                      Spr_Addr_MMUCR1 = 10'b1111111101;
       parameter [0:9]                      Spr_Addr_MMUCR2 = 10'b1111111110;
@@ -590,12 +599,16 @@ module mmq_spr(
       parameter                            spare_b_offset = lper_0_lps_offset + 4;
 `endif
       parameter                            cat_emf_act_offset = spare_b_offset + 64;
-      parameter                            scan_right_1 = cat_emf_act_offset + `MM_THREADS - 1;
+      parameter                            ptcr_offset = cat_emf_act_offset + `MM_THREADS;
+      parameter                            ptcr_wr_offset = ptcr_offset + 64;
+      parameter                            pid_wr_offset = ptcr_wr_offset + 1;
+      parameter                            spr_match_ptcr_offset = pid_wr_offset + 1;
+      parameter                            scan_right_1 = spr_match_ptcr_offset + 1 - 1;
 
       // boot config scan bits
       parameter                            mmucfg_offset = 0;
       parameter                            tlb0cfg_offset = mmucfg_offset + 2;
-      parameter                            mmucr1_offset = tlb0cfg_offset + 3;
+      parameter                            mmucr1_offset = tlb0cfg_offset + 4;
       parameter                            mmucr2_offset = mmucr1_offset + `MMUCR1_WIDTH;
 `ifdef MM_THREADS2
       parameter                            mmucr3_0_offset = mmucr2_offset + `MMUCR2_WIDTH;
@@ -648,6 +661,8 @@ module mmq_spr(
       wire                                 spr_match_mmucr2_q;
       wire                                 spr_match_lpidr;
       wire                                 spr_match_lpidr_q;
+      wire                                 spr_match_ptcr;
+      wire                                 spr_match_ptcr_q;
       wire                                 spr_match_mesr1;
       wire                                 spr_match_mesr1_q;
       wire                                 spr_match_mesr2;
@@ -803,6 +818,10 @@ module mmq_spr(
       wire [0:`MMUCR2_WIDTH-1]              mmucr2_q;
       wire [0:`LPID_WIDTH-1]                lpidr_d;
       wire [0:`LPID_WIDTH-1]                lpidr_q;
+      wire [0:63]                          ptcr_d;
+      wire [0:63]                          ptcr_q;
+      wire                                 ptcr_wr_d, ptcr_wr_q;
+      wire                                 pid_wr_d,  pid_wr_q;
       wire [32:32+`MESR1_WIDTH-1]           mesr1_d;
       wire [32:32+`MESR1_WIDTH-1]           mesr1_q;
       wire [32:32+`MESR2_WIDTH-1]           mesr2_d;
@@ -1040,7 +1059,7 @@ module mmq_spr(
       wire [0:boot_scan_right]             bsiv;
       wire [0:boot_scan_right]             bsov;
       wire [47:48]                         mmucfg_q;
-      wire [45:47]                         tlb0cfg_q;
+      wire [44:47]                         tlb0cfg_q;
       wire [0:15]                          bcfg_spare_q;
 
       wire                                 pc_cfg_sl_thold_0_b;
@@ -1048,7 +1067,7 @@ module mmq_spr(
       wire                                 lcb_dclk;
       wire [0:`NCLK_WIDTH-1]               lcb_lclk;
       wire [47:48]                         mmucfg_q_b;
-      wire [45:47]                         tlb0cfg_q_b;
+      wire [44:47]                         tlb0cfg_q_b;
       wire [0:15]                          bcfg_spare_q_b;
 
       wire [0:`MM_THREADS-1]               cat_emf_act_d;
@@ -1200,6 +1219,7 @@ assign xu_mm_derat_mmucr1_we_d = xu_mm_derat_mmucr1_we;
                                   (spr_addr_in_q == Spr_Addr_MMUCR0) | (spr_addr_in_q == Spr_Addr_MMUCR1) | (spr_addr_in_q == Spr_Addr_MMUCR2) | (spr_addr_in_q == Spr_Addr_MMUCR3) |
                                   (spr_addr_in_q == Spr_Addr_LPID) |
                                   (spr_addr_in_q == Spr_Addr_MESR1) | (spr_addr_in_q == Spr_Addr_MESR2) |
+                                  (spr_addr_in_q == Spr_Addr_PTCR) |
                                   (spr_addr_in_clone_q == Spr_Addr_MAS0) | (spr_addr_in_clone_q == Spr_Addr_MAS1) |
                                   (spr_addr_in_clone_q == Spr_Addr_MAS2) | (spr_addr_in_clone_q == Spr_Addr_MAS3) |
                                   (spr_addr_in_clone_q == Spr_Addr_MAS4) | (spr_addr_in_clone_q == Spr_Addr_MAS5) |
@@ -1224,6 +1244,7 @@ assign xu_mm_derat_mmucr1_we_d = xu_mm_derat_mmucr1_we;
    assign spr_match_mmucr1 = (spr_ctl_in_q[0] & (spr_addr_in_q == Spr_Addr_MMUCR1));
    assign spr_match_mmucr2 = (spr_ctl_in_q[0] & (spr_addr_in_q == Spr_Addr_MMUCR2));
    assign spr_match_lpidr = (spr_ctl_in_q[0] & (spr_addr_in_q == Spr_Addr_LPID));
+   assign spr_match_ptcr  = (spr_ctl_in_q[0] & (spr_addr_in_q == Spr_Addr_PTCR));
    assign spr_match_mesr1 = (spr_ctl_in_q[0] & (spr_addr_in_q == Spr_Addr_MESR1));
    assign spr_match_mesr2 = (spr_ctl_in_q[0] & (spr_addr_in_q == Spr_Addr_MESR2));
    assign spr_match_mmucsr0 = (spr_ctl_in_q[0] & (spr_addr_in_clone_q == Spr_Addr_MMUCSR0));
@@ -1396,6 +1417,18 @@ assign xu_mm_derat_mmucr1_we_d = xu_mm_derat_mmucr1_we;
 
    assign lpidr_d = ((spr_match_lpidr_q == 1'b1 & spr_ctl_int_q[1] == Spr_RW_Write)) ? spr_data_int_q[64 - `LPID_WIDTH:63] :
                     lpidr_q;
+
+   // PTCR, and the two invalidate strobes the radix walker needs.  Microwatt drops
+   // its cached roots on exactly these two writes (mmu.vhdl:1544-1560): mtspr PID
+   // invalidates the quadrant-0 root, mtspr PTCR invalidates everything.
+   assign ptcr_d    = ((spr_match_ptcr_q == 1'b1 & spr_ctl_int_q[1] == Spr_RW_Write)) ? spr_data_int_q[0:63] :
+                      ptcr_q;
+   assign ptcr_wr_d = (spr_match_ptcr_q == 1'b1 & spr_ctl_int_q[1] == Spr_RW_Write);
+   assign pid_wr_d  = ((spr_match_pid0_q == 1'b1
+`ifdef MM_THREADS2
+                       | spr_match_pid1_q == 1'b1
+`endif
+                      ) & spr_ctl_int_q[1] == Spr_RW_Write);
 
    // Perf event select registers
    // Each field controls selection of 1 of 64 events per event bus bit
@@ -2051,6 +2084,7 @@ assign xu_mm_derat_mmucr1_we_d = xu_mm_derat_mmucr1_we;
    //constant Spr_RW_Read : std_ulogic := '1'; -- read value for rw signal
 
    assign spr_data_out_d[32:63] = ( {{32-`LPID_WIDTH{1'b0}}, lpidr_q} & {32{(spr_match_lpidr_q & spr_ctl_int_q[1])}} ) |
+                                    ( ptcr_q[32:63] & {32{(spr_match_ptcr_q & spr_ctl_int_q[1])}} ) |
                                     ( {{32-`PID_WIDTH{1'b0}}, pid0_q} & {32{(spr_match_pid0_q & spr_ctl_int_q[1])}} ) |
                                     ( {mmucr0_0_q[0:5], 12'b0, mmucr0_0_q[6:19]} & {32{(spr_match_mmucr0_0_q & spr_ctl_int_q[1])}} ) |
                                     (  mmucr1_q & {32{(spr_match_mmucr1_q & spr_ctl_int_q[1])}} ) |
@@ -2060,7 +2094,7 @@ assign xu_mm_derat_mmucr1_we_d = xu_mm_derat_mmucr1_we;
                                     ( {mesr2_q[32:32 + `MESR2_WIDTH - 1], {32-`MESR2_WIDTH{1'b0}}} & {32{(spr_match_mesr2_q & spr_ctl_int_q[1])}} ) |
                                     ( {29'b0, mmucsr0_tlb0fi_q, 2'b00} & {32{(spr_match_mmucsr0_q & spr_ctl_int_q[1])}} ) |
                                     ( {Spr_Data_MMUCFG[32:46], mmucfg_q[47:48], Spr_Data_MMUCFG[49:63]} & {32{(spr_match_mmucfg_q & spr_ctl_int_q[1])}} ) |
-                                    ( {Spr_Data_TLB0CFG[32:44], tlb0cfg_q[45:47], Spr_Data_TLB0CFG[48:63]} & {32{(spr_match_tlb0cfg_q & spr_ctl_int_q[1])}} ) |
+                                    ( {Spr_Data_TLB0CFG[32:43], tlb0cfg_q[44:47], Spr_Data_TLB0CFG[48:63]} & {32{(spr_match_tlb0cfg_q & spr_ctl_int_q[1])}} ) |
                                     (  Spr_Data_TLB0PS  & {32{(spr_match_tlb0ps_q & spr_ctl_int_q[1])}} ) |
                                     (  Spr_Data_LRATCFG & {32{(spr_match_lratcfg_q & spr_ctl_int_q[1])}} ) |
                                     (  Spr_Data_LRATPS & {32{(spr_match_lratps_q & spr_ctl_int_q[1])}} ) |
@@ -2123,6 +2157,7 @@ assign xu_mm_derat_mmucr1_we_d = xu_mm_derat_mmucr1_we;
          //constant Spr_RW_Write : std_ulogic := '0'; -- write value for rw signal
          //constant Spr_RW_Read : std_ulogic := '1'; -- read value for rw signal
          assign spr_data_out_d[0:31] = ( {{64-`REAL_ADDR_WIDTH{1'b0}}, lper_0_alpn_q[64 - `REAL_ADDR_WIDTH:31]} & {32{(spr_match_lper_0_q & spr_ctl_int_q[1])}} ) |
+                                         ( ptcr_q[0:31] & {32{(spr_match_ptcr_q & spr_ctl_int_q[1])}} ) |
 `ifdef MM_THREADS2
                                          ( {{64-`REAL_ADDR_WIDTH{1'b0}}, lper_1_alpn_q[64 - `REAL_ADDR_WIDTH:31]} & {32{(spr_match_lper_1_q & spr_ctl_int_q[1])}} ) |
 `endif
@@ -2170,9 +2205,17 @@ assign xu_mm_derat_mmucr1_we_d = xu_mm_derat_mmucr1_we;
    assign tstmode4k_1 = tstmode4k_1_q[1:3];
 `endif
    assign lpidr = lpidr_q;
+   assign ptcr    = ptcr_q;
+   assign ptcr_wr = ptcr_wr_q;
+   assign pid_wr  = pid_wr_q;
    assign ac_an_lpar_id = lpidr_q;
    assign mmucfg_lrat = mmucfg_q[47];
    assign mmucfg_twc = mmucfg_q[48];
+   // TLB0CFG[44]: radix enable.  Boot-config latch, the exact analogue of
+   // tlb0cfg_ind which gates the Book-E E.PT walker. 0 at reset, so an
+   // unmodified A2O still boots Book-E.  MMUCR1 and MMUCR2 are both fully
+   // assigned (PLAN.md 3.6), so this reserved TLB0CFG bit is the free slot.
+   assign tlb0cfg_radix = tlb0cfg_q[44];
    assign tlb0cfg_pt = tlb0cfg_q[45];
    assign tlb0cfg_ind = tlb0cfg_q[46];
    assign tlb0cfg_gtwe = tlb0cfg_q[47];
@@ -3816,6 +3859,47 @@ endgenerate
    );
 
 `endif
+
+
+   //-------------------------------------------------------------------
+   // PTCR (SPR 464) and the cached-root invalidate strobes
+   //-------------------------------------------------------------------
+
+   tri_rlmreg_p #(.WIDTH(64), .INIT(0), .NEEDS_SRESET(1)) ptcr_latch(
+      .vd(vdd), .gd(gnd), .nclk(nclk), .act(spr_mmu_act_q[`MM_THREADS]),
+      .thold_b(pc_func_slp_sl_thold_0_b), .sg(pc_sg_0), .force_t(pc_func_slp_sl_force),
+      .delay_lclkr(lcb_delay_lclkr_dc[0]), .mpw1_b(lcb_mpw1_dc_b[0]), .mpw2_b(lcb_mpw2_dc_b),
+      .d_mode(lcb_d_mode_dc),
+      .scin(siv_1[ptcr_offset:ptcr_offset + 64 - 1]), .scout(sov_1[ptcr_offset:ptcr_offset + 64 - 1]),
+      .din(ptcr_d), .dout(ptcr_q)
+   );
+
+   tri_rlmlatch_p #(.INIT(0), .NEEDS_SRESET(1)) ptcr_wr_latch(
+      .vd(vdd), .gd(gnd), .nclk(nclk), .act(spr_mmu_act_q[`MM_THREADS]),
+      .thold_b(pc_func_slp_sl_thold_0_b), .sg(pc_sg_0), .force_t(pc_func_slp_sl_force),
+      .delay_lclkr(lcb_delay_lclkr_dc[0]), .mpw1_b(lcb_mpw1_dc_b[0]), .mpw2_b(lcb_mpw2_dc_b),
+      .d_mode(lcb_d_mode_dc),
+      .scin(siv_1[ptcr_wr_offset]), .scout(sov_1[ptcr_wr_offset]),
+      .din(ptcr_wr_d), .dout(ptcr_wr_q)
+   );
+
+   tri_rlmlatch_p #(.INIT(0), .NEEDS_SRESET(1)) pid_wr_latch(
+      .vd(vdd), .gd(gnd), .nclk(nclk), .act(spr_mmu_act_q[`MM_THREADS]),
+      .thold_b(pc_func_slp_sl_thold_0_b), .sg(pc_sg_0), .force_t(pc_func_slp_sl_force),
+      .delay_lclkr(lcb_delay_lclkr_dc[0]), .mpw1_b(lcb_mpw1_dc_b[0]), .mpw2_b(lcb_mpw2_dc_b),
+      .d_mode(lcb_d_mode_dc),
+      .scin(siv_1[pid_wr_offset]), .scout(sov_1[pid_wr_offset]),
+      .din(pid_wr_d), .dout(pid_wr_q)
+   );
+
+   tri_rlmlatch_p #(.INIT(0), .NEEDS_SRESET(1)) spr_match_ptcr_latch(
+      .vd(vdd), .gd(gnd), .nclk(nclk), .act(spr_match_act),
+      .thold_b(pc_func_slp_sl_thold_0_b), .sg(pc_sg_0), .force_t(pc_func_slp_sl_force),
+      .delay_lclkr(lcb_delay_lclkr_dc[0]), .mpw1_b(lcb_mpw1_dc_b[0]), .mpw2_b(lcb_mpw2_dc_b),
+      .d_mode(lcb_d_mode_dc),
+      .scin(siv_1[spr_match_ptcr_offset]), .scout(sov_1[spr_match_ptcr_offset]),
+      .din(spr_match_ptcr), .dout(spr_match_ptcr_q)
+   );
 
    tri_rlmreg_p #(.WIDTH(`LPID_WIDTH), .INIT(0), .NEEDS_SRESET(1)) lpidr_latch(
       .vd(vdd),
@@ -5702,15 +5786,15 @@ endgenerate
             .q_b(mmucfg_q_b[47:48])
          );
 
-         tri_slat_scan #(.WIDTH(3), .INIT(BCFG_TLB0CFG_VALUE), .RESET_INVERTS_SCAN(1'b1)) tlb0cfg_45to47_latch(
+         tri_slat_scan #(.WIDTH(4), .INIT(BCFG_TLB0CFG_VALUE), .RESET_INVERTS_SCAN(1'b1)) tlb0cfg_44to47_latch(
             .vd(vdd),
             .gd(gnd),
             .dclk(lcb_dclk),
             .lclk(lcb_lclk),
-            .scan_in(bsiv[tlb0cfg_offset:tlb0cfg_offset + 2]),
-            .scan_out(bsov[tlb0cfg_offset:tlb0cfg_offset + 2]),
-            .q(tlb0cfg_q[45:47]),
-            .q_b(tlb0cfg_q_b[45:47])
+            .scan_in(bsiv[tlb0cfg_offset:tlb0cfg_offset + 3]),
+            .scan_out(bsov[tlb0cfg_offset:tlb0cfg_offset + 3]),
+            .q(tlb0cfg_q[44:47]),
+            .q_b(tlb0cfg_q_b[44:47])
          );
 
          tri_slat_scan #(.WIDTH(16), .INIT(0), .RESET_INVERTS_SCAN(1'b1)) bcfg_spare_latch(
@@ -5769,7 +5853,7 @@ endgenerate
             .dout(mmucfg_q[47:48])
          );
 
-         tri_rlmreg_p #(.WIDTH(3), .INIT(BCFG_TLB0CFG_VALUE), .NEEDS_SRESET(1)) tlb0cfg_45to47_latch(
+         tri_rlmreg_p #(.WIDTH(4), .INIT(BCFG_TLB0CFG_VALUE), .NEEDS_SRESET(1)) tlb0cfg_44to47_latch(
             .vd(vdd),
             .gd(gnd),
             .nclk(nclk),
@@ -5781,10 +5865,10 @@ endgenerate
             .mpw1_b(lcb_mpw1_dc_b[0]),
             .mpw2_b(lcb_mpw2_dc_b),
             .d_mode(lcb_d_mode_dc),
-            .scin(bsiv[tlb0cfg_offset:tlb0cfg_offset + 2]),
-            .scout(bsov[tlb0cfg_offset:tlb0cfg_offset + 2]),
-            .din(tlb0cfg_q[45:47]),
-            .dout(tlb0cfg_q[45:47])
+            .scin(bsiv[tlb0cfg_offset:tlb0cfg_offset + 3]),
+            .scout(bsov[tlb0cfg_offset:tlb0cfg_offset + 3]),
+            .din(tlb0cfg_q[44:47]),
+            .dout(tlb0cfg_q[44:47])
          );
 
          tri_rlmreg_p #(.WIDTH(16), .INIT(0), .NEEDS_SRESET(1)) bcfg_spare_latch(
