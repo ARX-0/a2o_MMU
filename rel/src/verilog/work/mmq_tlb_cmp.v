@@ -258,6 +258,11 @@ module mmq_tlb_cmp(
    output                                  tlb_htw_req_valid,
    output [0:`TLB_TAG_WIDTH-1]             tlb_htw_req_tag,
    output [`TLB_WORD_WIDTH:`TLB_WAY_WIDTH-1] tlb_htw_req_way,
+   // radix walker handoff (mmq_rtw).  Shares the tag/way payload with the Book-E
+   // handoff above but has its own valid, because the trigger condition is the
+   // opposite one -- see the comment at the tlb_rtw_req_valid assign.
+   input                                   mmucr1_rxe,
+   output                                  tlb_rtw_req_valid,
    output                                  tlbwe_back_inv_valid,
    output [0:`MM_THREADS-1]                tlbwe_back_inv_thdid,
    output [52-`EPN_WIDTH:51]               tlbwe_back_inv_addr,
@@ -4368,7 +4373,10 @@ module mmq_tlb_cmp(
       assign eratmiss_done_d = tlb_erat_val_q[0:`MM_THREADS-1] | tlb_erat_val_q[5:5 + `MM_THREADS-1];
 
       // tell the XU that the derat request missed in the TLB
-      assign tlb_miss_d = ( ((tlb_tag4_q[`tagpos_type_ierat] == 1'b1 | tlb_tag4_q[`tagpos_type_derat] == 1'b1) & tlb_tag4_q[`tagpos_type_ptereload] == 1'b0 & tlb_tag4_q[`tagpos_endflag] == 1'b1 &
+      // With RXE set the miss is handed to mmq_rtw instead of being reported, or the
+      // thread would take a TLB-miss interrupt on every walk.
+      assign tlb_miss_d = ( (mmucr1_rxe == 1'b0 &
+                                 (tlb_tag4_q[`tagpos_type_ierat] == 1'b1 | tlb_tag4_q[`tagpos_type_derat] == 1'b1) & tlb_tag4_q[`tagpos_type_ptereload] == 1'b0 & tlb_tag4_q[`tagpos_endflag] == 1'b1 &
                                  |(tlb_tag4_wayhit_q[0:`TLB_WAYS - 1]) == 1'b0 & tlb_tag4_q[`tagpos_nonspec] == 1'b1 & |(tag4_parerr_q[0:4]) == 1'b0) ) ? tlb_tag4_q[`tagpos_thdid:`tagpos_thdid + `MM_THREADS - 1] :
                           {`MM_THREADS{1'b0}};
 
@@ -5071,6 +5079,23 @@ module mmq_tlb_cmp(
       assign tlb_htw_req_valid = ( tlb_tag4_q[`tagpos_type_derat:`tagpos_type_ierat] != 2'b00 & tlb_tag4_q[`tagpos_type_ptereload] == 1'b0 & tlb_tag4_q[`tagpos_ind] == 1'b1 &
                                      tlb_tag4_q[`tagpos_nonspec] == 1'b1 & tlb_tag4_wayhit_q[`TLB_WAYS] == 1'b1 & multihit == 1'b0 ) ? 1'b1 :
                                  1'b0;
+
+      // Radix walker handoff.  NOTE the trigger is the OPPOSITE of the Book-E one
+      // above: E.PT starts from an indirect TLB entry HIT (tagpos_ind==1), whereas a
+      // radix walk has no indirect entry at all and must start on a genuine TLB
+      // MISS.  The condition therefore mirrors tlb_miss_d rather than
+      // tlb_htw_req_valid: erat request, not a ptereload pass, all page-size probes
+      // done (endflag), no way hit, no parity error, and -- the load-bearing term --
+      // nonspec, so a speculative miss never leaves the core (PLAN.md 5.1 rule 1).
+      // When RXE is set this replaces the TLB-miss exception: mmq_rtw walks and then
+      // returns either a translation or a fault through the normal ptereload path.
+      assign tlb_rtw_req_valid = ( mmucr1_rxe == 1'b1 &
+                                   (tlb_tag4_q[`tagpos_type_ierat] == 1'b1 | tlb_tag4_q[`tagpos_type_derat] == 1'b1) &
+                                   tlb_tag4_q[`tagpos_type_ptereload] == 1'b0 &
+                                   tlb_tag4_q[`tagpos_endflag] == 1'b1 &
+                                   |(tlb_tag4_wayhit_q[0:`TLB_WAYS - 1]) == 1'b0 &
+                                   tlb_tag4_q[`tagpos_nonspec] == 1'b1 &
+                                   |(tag4_parerr_q[0:4]) == 1'b0 ) ? 1'b1 : 1'b0;
 
       assign tlb_htw_req_way = tlb_tag4_way_or[`TLB_WORD_WIDTH:`TLB_WAY_WIDTH - 1];
 

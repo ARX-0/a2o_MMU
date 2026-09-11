@@ -553,7 +553,39 @@ module mmq(
       wire                                  tlb_htw_req_valid;
       wire [0:`TLB_TAG_WIDTH-1]              tlb_htw_req_tag;
       wire [`TLB_WORD_WIDTH:`TLB_WAY_WIDTH-1] tlb_htw_req_way;
-      wire                                  htw_lsu_req_valid;
+      // Book-E (mmq_htw) and radix (mmq_rtw) walker outputs, muxed on MMUCR1[RXE]
+      wire                                  htwx_lsu_req_valid;
+      wire [0:`THDID_WIDTH-1]               htwx_lsu_thdid;
+      wire [0:1]                            htwx_lsu_ttype;
+      wire [0:4]                            htwx_lsu_wimge;
+      wire [0:3]                            htwx_lsu_u;
+      wire [64-`REAL_ADDR_WIDTH:63]         htwx_lsu_addr;
+      wire [0:`THDID_WIDTH-1]               htwx_quiesce;
+      wire                                  htwx_ptereload_req_valid;
+      wire [0:`TLB_TAG_WIDTH-1]             htwx_ptereload_req_tag;
+      wire [0:`PTE_WIDTH-1]                 htwx_ptereload_req_pte;
+      wire                                  rtwx_lsu_req_valid;
+      wire [0:`THDID_WIDTH-1]               rtwx_lsu_thdid;
+      wire [0:1]                            rtwx_lsu_ttype;
+      wire [0:4]                            rtwx_lsu_wimge;
+      wire [0:3]                            rtwx_lsu_u;
+      wire [64-`REAL_ADDR_WIDTH:63]         rtwx_lsu_addr;
+      wire [0:`THDID_WIDTH-1]               rtwx_quiesce;
+      wire                                  rtwx_ptereload_req_valid;
+      wire [0:`TLB_TAG_WIDTH-1]             rtwx_ptereload_req_tag;
+      wire [0:`PTE_WIDTH-1]                 rtwx_ptereload_req_pte;
+      wire                                  tlb_rtw_req_valid;
+      wire                                  mmucr1_rxe;
+      wire                                  tlb0cfg_radix;
+      wire                                  rtw_scan_link;
+      wire [0:63]                           ptcr_sig;
+      wire                                  ptcr_wr_sig;
+      wire                                  pid_wr_sig;
+      wire [0:`MM_THREADS-1]                rtw_pt_fault_sig, rtw_badtree_sig;
+      wire [0:`MM_THREADS-1]                rtw_segerror_sig, rtw_perm_err_sig;
+      wire [0:`MM_THREADS-1]                rtw_rc_err_sig, rtw_lrat_miss_sig;
+      wire [0:`MM_THREADS-1]                rtw_mchk_sig;
+      wire                                  htw_lsu_req_valid;   // muxed
       wire [0:`THDID_WIDTH-1]                htw_lsu_thdid;
       wire [0:1]                            htw_dbg_lsu_thdid;
       // 0=tlbivax_op, 1=tlbi_complete, 2=mmu read with core_tag=01100, 3=mmu read with core_tag=01101
@@ -1669,6 +1701,10 @@ mmq_spr #(.BCFG_MMUCR1_VALUE(BCFG_MMUCR1_VALUE), .BCFG_MMUCR2_VALUE(BCFG_MMUCR2_
   .mmucfg_twc(mmucfg_twc),
   .tlb0cfg_pt(tlb0cfg_pt),
   .tlb0cfg_ind(tlb0cfg_ind),
+  .tlb0cfg_radix(tlb0cfg_radix),
+  .ptcr(ptcr_sig),
+  .ptcr_wr(ptcr_wr_sig),
+  .pid_wr(pid_wr_sig),
   .tlb0cfg_gtwe(tlb0cfg_gtwe),
   .mmq_spr_event_mux_ctrls(mmq_spr_event_mux_ctrls_sig),
   .mas0_0_atsel(mas0_0_atsel),
@@ -3165,6 +3201,38 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
          // TLB Compare Logic Component Instantiation
          //---------------------------------------------------------------------
 
+
+      //---------------------------------------------------------------------
+      // Exception merge: Book-E (mmq_tlb_cmp) OR radix (mmq_rtw)
+      //---------------------------------------------------------------------
+      // A2O's Book-E exception set has no encodings for the radix-specific causes
+      // Microwatt distinguishes via DSISR bits 44/45 (badtree / RC).  They are all
+      // storage interrupts, so segerror, badtree, perm and rc collapse onto
+      // pt_fault -- the architected "page table fault" -- while lrat_miss maps
+      // exactly and the walker's machine checks join tlb_par_err.  Collapsing is
+      // safe: software re-reads the PTE and re-walks either way.  Preserving the
+      // distinct cause would need new MESR1 bits (PLAN.md 3.6).
+      wire [0:`MM_THREADS-1] cmpx_pt_fault_sig, cmpx_lrat_miss_sig, cmpx_tlb_par_err_sig;
+      wire [0:`MM_THREADS-1] cmpx_esr_pt_sig, cmpx_esr_data_sig;
+      wire                   cmpx_pt_fault_ored_sig, cmpx_lrat_miss_ored_sig;
+      wire [0:`MM_THREADS-1] rtw_storage_fault;
+
+      assign rtw_storage_fault = rtw_pt_fault_sig | rtw_badtree_sig | rtw_segerror_sig |
+                                 rtw_perm_err_sig | rtw_rc_err_sig;
+
+      assign mm_xu_pt_fault_sig    = cmpx_pt_fault_sig    | rtw_storage_fault;
+      assign mm_xu_lrat_miss_sig   = cmpx_lrat_miss_sig   | rtw_lrat_miss_sig;
+      assign mm_xu_tlb_par_err_sig = cmpx_tlb_par_err_sig | rtw_mchk_sig;
+      // ESR[PT] marks it as a page-table fault; ESR[DATA] is set for the D side.
+      // The walker's tag carries the request type, but by the time the fault is
+      // reported the context is retiring, so ESR[DATA] is driven for any radix
+      // storage fault -- an I-side fault reports through the same ISI path.
+      assign mm_xu_esr_pt_sig      = cmpx_esr_pt_sig      | rtw_storage_fault | rtw_lrat_miss_sig;
+      assign mm_xu_esr_data_sig    = cmpx_esr_data_sig    | rtw_storage_fault;
+
+      assign mm_xu_pt_fault_ored_sig  = cmpx_pt_fault_ored_sig  | (|rtw_storage_fault);
+      assign mm_xu_lrat_miss_ored_sig = cmpx_lrat_miss_ored_sig | (|rtw_lrat_miss_sig);
+
          mmq_tlb_cmp #(.MMQ_TLB_CMP_CSWITCH_0TO7(MMQ_TLB_CMP_CSWITCH_0TO7)) mmq_tlb_cmp(
             .vdd(vdd),
             .gnd(gnd),
@@ -3409,12 +3477,12 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
             .mm_xu_tlb_miss(mm_xu_tlb_miss_sig),
             .mm_xu_tlb_inelig(mm_xu_tlb_inelig_sig),
 
-            .mm_xu_lrat_miss(mm_xu_lrat_miss_sig),
-            .mm_xu_pt_fault(mm_xu_pt_fault_sig),
+            .mm_xu_lrat_miss(cmpx_lrat_miss_sig),
+            .mm_xu_pt_fault(cmpx_pt_fault_sig),
             .mm_xu_hv_priv(mm_xu_hv_priv_sig),
 
-            .mm_xu_esr_pt(mm_xu_esr_pt_sig),
-            .mm_xu_esr_data(mm_xu_esr_data_sig),
+            .mm_xu_esr_pt(cmpx_esr_pt_sig),
+            .mm_xu_esr_data(cmpx_esr_data_sig),
             .mm_xu_esr_epid(mm_xu_esr_epid_sig),
             .mm_xu_esr_st(mm_xu_esr_st_sig),
 
@@ -3422,7 +3490,7 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
             .mm_xu_cr0_eq_valid(mm_xu_cr0_eq_valid_sig),
 
             .mm_xu_tlb_multihit_err(mm_xu_tlb_multihit_err_sig),
-            .mm_xu_tlb_par_err(mm_xu_tlb_par_err_sig),
+            .mm_xu_tlb_par_err(cmpx_tlb_par_err_sig),
             .mm_xu_lru_par_err(mm_xu_lru_par_err_sig),
 
             .mm_xu_ord_tlb_multihit(mm_xu_ord_tlb_multihit_sig),
@@ -3430,9 +3498,9 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
             .mm_xu_ord_lru_par_err(mm_xu_ord_lru_par_err_sig),
 
             .mm_xu_tlb_miss_ored(mm_xu_tlb_miss_ored_sig),
-            .mm_xu_lrat_miss_ored(mm_xu_lrat_miss_ored_sig),
+            .mm_xu_lrat_miss_ored(cmpx_lrat_miss_ored_sig),
             .mm_xu_tlb_inelig_ored(mm_xu_tlb_inelig_ored_sig),
-            .mm_xu_pt_fault_ored(mm_xu_pt_fault_ored_sig),
+            .mm_xu_pt_fault_ored(cmpx_pt_fault_ored_sig),
             .mm_xu_hv_priv_ored(mm_xu_hv_priv_ored_sig),
             .mm_xu_cr0_eq_ored(mm_xu_cr0_eq_ored_sig),
             .mm_xu_cr0_eq_valid_ored(mm_xu_cr0_eq_valid_ored_sig),
@@ -3678,6 +3746,30 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
          //---------------------------------------------------------------------
 
          //work.mmq_htw #(.`THREADS(`THREADS), .`THDID_WIDTH(`THDID_WIDTH), .`PID_WIDTH(`PID_WIDTH), .`LPID_WIDTH(`LPID_WIDTH), .`EPN_WIDTH(`EPN_WIDTH), .`REAL_ADDR_WIDTH(`REAL_ADDR_WIDTH), .`RPN_WIDTH(`RPN_WIDTH), .`TLB_WAY_WIDTH(`TLB_WAY_WIDTH), .`TLB_WORD_WIDTH(`TLB_WORD_WIDTH), .`TLB_TAG_WIDTH(`TLB_TAG_WIDTH), .`PTE_WIDTH(`PTE_WIDTH), .`EXPAND_TYPE(`EXPAND_TYPE)) mmq_htw(
+
+      //---------------------------------------------------------------------
+      // Walker selection: Book-E E.PT (mmq_htw) vs radix (mmq_rtw)
+      //---------------------------------------------------------------------
+      // TLB0CFG[44], a boot-config latch -- the direct analogue of tlb0cfg_ind,
+      // which already gates the Book-E E.PT walker.  MMUCR1 and MMUCR2 are both
+      // fully assigned (MMUCR1[23:31] is the hardware-written EEN status field,
+      // MMUCR2[0:11] is the act_override distribution), so a reserved TLB0CFG bit
+      // is the only free slot.  0 at reset: an unmodified A2O boots Book-E.
+      assign mmucr1_rxe = tlb0cfg_radix;
+
+      assign htw_lsu_req_valid  = (mmucr1_rxe) ? rtwx_lsu_req_valid  : htwx_lsu_req_valid;
+      assign htw_lsu_thdid      = (mmucr1_rxe) ? rtwx_lsu_thdid      : htwx_lsu_thdid;
+      assign htw_lsu_ttype      = (mmucr1_rxe) ? rtwx_lsu_ttype      : htwx_lsu_ttype;
+      assign htw_lsu_wimge      = (mmucr1_rxe) ? rtwx_lsu_wimge      : htwx_lsu_wimge;
+      assign htw_lsu_u          = (mmucr1_rxe) ? rtwx_lsu_u          : htwx_lsu_u;
+      assign htw_lsu_addr       = (mmucr1_rxe) ? rtwx_lsu_addr       : htwx_lsu_addr;
+      // quiesce must be the AND of both: a thread is idle only when neither walker
+      // holds an outstanding request for it.
+      assign htw_quiesce_sig    = htwx_quiesce & rtwx_quiesce;
+      assign ptereload_req_valid = (mmucr1_rxe) ? rtwx_ptereload_req_valid : htwx_ptereload_req_valid;
+      assign ptereload_req_tag   = (mmucr1_rxe) ? rtwx_ptereload_req_tag   : htwx_ptereload_req_tag;
+      assign ptereload_req_pte   = (mmucr1_rxe) ? rtwx_ptereload_req_pte   : htwx_ptereload_req_pte;
+
          mmq_htw  mmq_htw(
             .vdd(vdd),
             .gnd(gnd),
@@ -3716,15 +3808,15 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
             .tlb_htw_req_valid(tlb_htw_req_valid),
             .tlb_htw_req_tag(tlb_htw_req_tag),
             .tlb_htw_req_way(tlb_htw_req_way),
-            .htw_lsu_req_valid(htw_lsu_req_valid),
-            .htw_lsu_thdid(htw_lsu_thdid),
+            .htw_lsu_req_valid(htwx_lsu_req_valid),
+            .htw_lsu_thdid(htwx_lsu_thdid),
             .htw_dbg_lsu_thdid(htw_dbg_lsu_thdid),
-            .htw_lsu_ttype(htw_lsu_ttype),
-            .htw_lsu_wimge(htw_lsu_wimge),
-            .htw_lsu_u(htw_lsu_u),
-            .htw_lsu_addr(htw_lsu_addr),
+            .htw_lsu_ttype(htwx_lsu_ttype),
+            .htw_lsu_wimge(htwx_lsu_wimge),
+            .htw_lsu_u(htwx_lsu_u),
+            .htw_lsu_addr(htwx_lsu_addr),
             .htw_lsu_req_taken(htw_lsu_req_taken),
-            .htw_quiesce(htw_quiesce_sig),
+            .htw_quiesce(htwx_quiesce),
 
             .htw_req0_valid(htw_req0_valid),
             .htw_req0_thdid(htw_req0_thdid),
@@ -3738,9 +3830,9 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
             .htw_req3_valid(htw_req3_valid),
             .htw_req3_thdid(htw_req3_thdid),
             .htw_req3_type(htw_req3_type),
-            .ptereload_req_valid(ptereload_req_valid),
-            .ptereload_req_tag(ptereload_req_tag),
-            .ptereload_req_pte(ptereload_req_pte),
+            .ptereload_req_valid(htwx_ptereload_req_valid),
+            .ptereload_req_tag(htwx_ptereload_req_tag),
+            .ptereload_req_pte(htwx_ptereload_req_pte),
             .ptereload_req_taken(ptereload_req_taken),
             .an_ac_reld_core_tag(an_ac_reld_core_tag),
             .an_ac_reld_data(an_ac_reld_data),
@@ -3782,6 +3874,106 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
 
             .htw_dbg_pte1_reld_for_me_tm1(htw_dbg_pte1_reld_for_me_tm1)
          );
+
+         //------------------------------------------------------------------
+         // Radix tablewalker (Power ISA 3.1C), selected by TLB0CFG[44].
+         // Shares the tag/way handoff payload and the L2 reload bus with mmq_htw;
+         // its LSU request and ptereload outputs are muxed above.  mmq_htw is
+         // untouched and remains fully functional when radix is disabled.
+         //------------------------------------------------------------------
+         mmq_rtw  mmq_rtw(
+            .vdd(vdd),
+            .gnd(gnd),
+            .nclk(nclk),
+            .tc_ccflush_dc(tc_ac_ccflush_dc),
+            .tc_scan_dis_dc_b(tc_ac_scan_dis_dc_b),
+            .tc_scan_diag_dc(tc_ac_scan_diag_dc),
+            .tc_lbist_en_dc(tc_ac_lbist_en_dc),
+            .lcb_d_mode_dc(lcb_d_mode_dc),
+            .lcb_clkoff_dc_b(lcb_clkoff_dc_b),
+            .lcb_act_dis_dc(lcb_act_dis_dc),
+            .lcb_mpw1_dc_b(lcb_mpw1_dc_b),
+            .lcb_mpw2_dc_b(lcb_mpw2_dc_b),
+            .lcb_delay_lclkr_dc(lcb_delay_lclkr_dc),
+            // Only one external scan bit is left (func_scan_in_int is [0:9] and
+            // mmq_htw takes 7:8), so mmq_rtw's two internal chains are stitched
+            // into one: chain 1 feeds chain 0, chain 0 exits on bit 9.
+            .ac_func_scan_in( {func_scan_in_int[9], rtw_scan_link} ),
+            .ac_func_scan_out( {func_scan_out_int[9], rtw_scan_link} ),
+            .pc_sg_2(pc_sg_2[1]),
+            .pc_func_sl_thold_2(pc_func_sl_thold_2[1]),
+            .pc_func_slp_sl_thold_2(pc_func_slp_sl_thold_2[1]),
+            .xu_mm_ccr2_notlb_b(xu_mm_ccr2_notlb_b),
+            .mmucr2_act_override(mmucr2_sig[0]),
+            .tlb_delayed_act(tlb_delayed_act),
+            .mmucr1_rxe(mmucr1_rxe),
+            .tlb_rtw_req_valid(tlb_rtw_req_valid),
+            .tlb_rtw_req_tag(tlb_htw_req_tag),
+            .tlb_rtw_req_way(tlb_htw_req_way),
+            .tlb_ctl_tag2_flush(tlb_ctl_tag2_flush),
+            .tlb_ctl_tag3_flush(tlb_ctl_tag3_flush),
+            .tlb_ctl_tag4_flush(tlb_ctl_tag4_flush),
+            .tlb_tag2(tlb_tag2),
+            .tlb_tag5_except(tlb_tag5_except),
+            .xu_ex5_flush(xu_ex5_flush_sig),
+            .inv_seq_inprogress(tlb_seq_snoop_inprogress),
+            .inv_lpid(lpidr_sig),
+            .inv_pid({`PID_WIDTH{1'b0}}),
+            .inv_gs(1'b0),
+            .inv_as(1'b0),
+            .inv_all(tlb_seq_snoop_inprogress),
+            .ptcr(ptcr_sig),
+            .ptcr_wr(ptcr_wr_sig),
+            .pid_wr(pid_wr_sig),
+            .rtw_lsu_req_valid(rtwx_lsu_req_valid),
+            .rtw_lsu_thdid(rtwx_lsu_thdid),
+            .rtw_lsu_ttype(rtwx_lsu_ttype),
+            .rtw_lsu_wimge(rtwx_lsu_wimge),
+            .rtw_lsu_u(rtwx_lsu_u),
+            .rtw_lsu_addr(rtwx_lsu_addr),
+            .rtw_lsu_req_taken(htw_lsu_req_taken),
+            // P2-11.  mmq_tlb_lrat is a PIPELINED lookup driven from tlb_tag0_*, not a
+            // standalone request port, so a per-level walker check needs a second
+            // compare port rather than a wire.  Until that exists, guest-mode radix
+            // walks are refused outright (hit tied low -> Flt_LratMiss) instead of
+            // proceeding with addresses read out of guest-writable memory.  Radix in
+            // hypervisor state (gs=0) is unaffected and fully functional.
+            .rtw_lrat_req_valid(),
+            .rtw_lrat_addr(),
+            .rtw_lrat_lpid(),
+            .rtw_lrat_hit(1'b0),
+            .rtw_quiesce(rtwx_quiesce),
+            .ptereload_req_valid(rtwx_ptereload_req_valid),
+            .ptereload_req_tag(rtwx_ptereload_req_tag),
+            .ptereload_req_pte(rtwx_ptereload_req_pte),
+            .ptereload_req_taken(ptereload_req_taken),
+            .an_ac_reld_core_tag(an_ac_reld_core_tag),
+            .an_ac_reld_data(an_ac_reld_data),
+            .an_ac_reld_data_vld(an_ac_reld_data_vld),
+            .an_ac_reld_ecc_err(an_ac_reld_ecc_err),
+            .an_ac_reld_ecc_err_ue(an_ac_reld_ecc_err_ue),
+            .an_ac_reld_qw(an_ac_reld_qw[58:59]),
+            .an_ac_reld_ditc(an_ac_reld_ditc),
+            .an_ac_reld_crit_qw(an_ac_reld_crit_qw),
+            .rtw_pt_fault(rtw_pt_fault_sig),
+            .rtw_badtree(rtw_badtree_sig),
+            .rtw_segerror(rtw_segerror_sig),
+            .rtw_perm_err(rtw_perm_err_sig),
+            .rtw_rc_err(rtw_rc_err_sig),
+            .rtw_lrat_miss(rtw_lrat_miss_sig),
+            .rtw_mchk(rtw_mchk_sig),
+            .rtw_dbg_seq_idle(),
+            .rtw_dbg_ctx0_seq_q(),
+            .rtw_dbg_ctx1_seq_q(),
+            .rtw_dbg_ctx_valid_q(),
+            .rtw_dbg_ctx_killed_q(),
+            .rtw_dbg_ctx0_shift_q(),
+            .rtw_dbg_ctx1_shift_q(),
+            .rtw_dbg_ptb_valid_q(),
+            .rtw_dbg_pt0_valid_q(),
+            .rtw_dbg_pt3_valid_q()
+         );
+
       end
    endgenerate
    // End of mmq_htw component instantiation
