@@ -61,23 +61,22 @@ Two properties of the encoding are deliberate and follow A2O house style:
 | `Killed` | `1111` | 1254 | **A2O-only** | **Terminal, flushed or invalidated.** Present V=0 | `Idle` |
 | `Timeout` | `1110` | 1266 | **A2O-only** | **Terminal, watchdog.** Present V=0, machine check | `Idle` |
 
-The last two rows are the interesting ones. Ten of the twelve states are transcribed from
-Microwatt; `Killed` and `Timeout` have no counterpart there and exist solely because A2O is
-out-of-order — see [05-ooo-safety](05-ooo-safety.md). Microwatt's `TLBWAIT` and `DO_TLBIE`
-were deliberately **not** ported: A2O's own TLB sequencer and invalidate sequencer already
-cover arbitration and invalidation.
+Ten of the twelve states are transcribed from Microwatt. `Killed` and `Timeout` have no
+counterpart there and exist solely because A2O is out-of-order — see
+[05-ooo-safety](05-ooo-safety.md). Microwatt's `TLBWAIT` and `DO_TLBIE` were deliberately
+**not** ported: A2O's own TLB sequencer and invalidate sequencer already cover arbitration
+and invalidation.
 
-All four terminal states drive the same output handshake. That is not redundancy — it is the
-single most important safety property in the module, and is explained in
-[§2.6](#26-why-every-exit-goes-through-the-same-handshake).
+All four terminal states drive the same output handshake. That is not redundancy. It is the
+property that prevents the load/store unit's miss queue from leaking entries, and it is
+explained in [§2.6](#26-why-every-exit-goes-through-the-same-handshake).
 
 ## 2.3 State diagram
 
-The machine is drawn as two diagrams. Splitting it is not a presentation convenience: drawn
-as one graph the sixteen abort and return edges — every active state to `Killed` and to
-`Timeout`, every terminal back to `Idle` — cross the twelve edges that actually advance a
-walk, and bury them. Those sixteen carry one bit of information between them (*every* active
-state aborts identically), so collapsing them loses nothing and makes both halves legible.
+The machine is drawn as two diagrams. Drawn as one graph, the sixteen abort and return edges
+— every active state to `Killed` and to `Timeout`, every terminal back to `Idle` — cross the
+twelve edges that advance a walk and bury them. Those sixteen carry one bit of information
+between them: *every* active state aborts identically. Collapsing them loses nothing.
 
 ### Diagram A — the nominal walk
 
@@ -141,11 +140,11 @@ stateDiagram-v2
     Shake --> Idle2 : reload taken<br/>1238 1250 1262 1274
 ```
 
-`Shake` is not a state — it is the shared output behaviour of the four terminal states,
-drawn explicitly because it is the property that stops the load/store unit's miss queue from
-leaking. See [§2.6](#26-why-every-exit-goes-through-the-same-handshake).
+`Shake` is not a state. It is the shared output behaviour of the four terminal states, drawn
+explicitly because it is what stops the load/store unit's miss queue from leaking. See
+[§2.6](#26-why-every-exit-goes-through-the-same-handshake).
 
-Three things the split makes visible that the single diagram did not:
+Three properties of the machine that Diagram B makes visible:
 
 - **`Fault` has fourteen entry points**, and only half are architected page-table faults
   (invalid entry, segment error, bad tree, LRAT miss). The other seven are error recovery —
@@ -154,8 +153,8 @@ Three things the split makes visible that the single diagram did not:
 - **`Killed` and `Timeout` are reachable from six states each, but never from `SegChk`.**
   `SegChk` issues no memory request and completes in a single cycle, so there is nothing to
   abort and no stall for the watchdog to observe.
-- **All four terminals converge before returning to `Idle`.** In the original diagram this
-  was four separate long back-edges and read as an artefact of drawing; here it is the point.
+- **All four terminals converge before returning to `Idle`.** They share one exit path, not
+  four.
 
 ## 2.4 Flow of events: a cold four-level walk
 
@@ -176,7 +175,7 @@ A2O has two such caches, in series:
 | | Entries | Scope | Purpose |
 |---|---:|---|---|
 | **ERAT** (Effective-to-Real Address Translation) | 16 instruction-side, 32 data-side | per thread, adjacent to the pipeline | translate in the common case without leaving the unit |
-| **TLB** (Translation Lookaside Buffer) | 512, 4-way | shared across threads | back the ERATs; 8 page sizes |
+| **TLB** (Translation Lookaside Buffer) | 512, 4-way | shared across threads | back the ERATs; 5 page sizes (`mmq_spr.v:382`) |
 
 A **page-table walk** is what happens when both miss: the hardware has to go and read the map
 itself. One point that is easy to miss and worth stating plainly — **the walk reads ordinary
@@ -203,14 +202,14 @@ satisfied without one.
 
 The obvious data structure for a map is an array indexed by page number. Work out what that
 costs, using this port's own worked example — a 48-bit address space, which is what
-`RTS = 17` gives (address space = `RTS + 31`):
+`RTS = 17` gives (address space = `RTS + 31` bits; `mmu.vhdl:1650-1655`, `mmq_rtw.v:1058`):
 
 - 48-bit space at 4 kB pages → 2³⁶ pages → 2³⁶ entries.
 - At 8 bytes per entry: **512 GiB of page table**. For one process.
 
-That is obviously unusable, and the reason is that address spaces are **sparse**: a process
-maps a little code, a little data, a stack, and leaves almost all of the 48 bits untouched.
-A flat array pays for the whole space; a tree pays only for the branches that exist.
+That is unusable. The reason is that address spaces are **sparse**: a process maps a little
+code, a little data, a stack, and leaves almost all of the 48 bits untouched. A flat array
+pays for the whole space; a tree pays only for the branches that exist.
 
 Radix uses a tree of page directories. Each level consumes some index bits from the
 effective address to select an entry, which points at the next level down:
@@ -226,13 +225,16 @@ Four levels of 9 bits cover 36 bits; the remaining 12 are the offset within the 
 in the diagram below, and to the shift value stepping 27 → 18 → 9 → 0
 ([§2.8](#28-the-descend-decision-and-why-there-is-no-level-counter)).
 
-The detail that makes the whole design click, and the one worth having ready in conversation:
+One consequence of choosing 9 is worth stating on its own:
 
 > **9 index bits × 8 bytes per entry = 4096 bytes.** Each page directory is *exactly one
 > page*. The tree is built out of the same allocation unit it describes.
 
-That is not a coincidence — it is why 9 is the level width. A directory is allocated,
-mapped and freed like any other page.
+A directory is therefore allocated, mapped and freed like any other page. Note that 9 is a
+property of the tree the *software* builds, not of the hardware: `NLS` is read from each
+directory entry and any width in 5–16 is legal (`mmu.vhdl:1719-1736`). This walker handles
+whatever shape it is given; the worked example uses 9 because that is what makes a directory
+one page.
 
 The cost of the tree is **depth**: what was one array lookup is now four dependent memory
 accesses. Size has been traded for pointer chasing, and §2.4.5 is about what that trade
@@ -255,15 +257,14 @@ Neither is part of the tree. They answer the question *"where is this process's 
 - The **process table** is indexed by `PID`, so each process within a partition gets its own
   tree root. This is what makes a context switch cheap: change `PID`, and translation follows.
 
-Stated honestly, because a reviewer will ask: **in this port, and in Microwatt, the partition
-table is vestigial.** The walker reads entry 0, doubleword 1, unconditionally and ignores
-`LPID` entirely (`809`; Microwatt does the same at `mmu.vhdl,1846`). Those two loads
-currently buy generality that neither implementation uses. A2O covers partition-scope
-translation with its LRAT instead.
+**In this port, and in Microwatt, the partition table is vestigial.** The walker reads entry
+0, doubleword 1, unconditionally and ignores `LPID` entirely (`809`; Microwatt does the same
+at `mmu.vhdl,1846`). Those two loads currently buy generality that neither implementation
+uses. A2O covers partition-scope translation with its LRAT instead.
 
 ### 2.4.5 The dependency chain — where the cost actually comes from
 
-This is the part that matters, and the count of six loads is not it.
+The cost is not the count of six loads. It is that they cannot be overlapped.
 
 > **Level *N*'s address is computed from level *N−1*'s data.** The walker physically cannot
 > issue load *N* until load *N−1* has returned.
@@ -294,7 +295,7 @@ still queue.
 arbiter handshake plus the four-stage reload staging). No absolute cycle count is given here
 because A2O's L2 latency depends on the system it is integrated into.
 
-Two honest qualifications a reviewer will want:
+Two qualifications on that cost:
 
 1. **The typical case is much better than the worst case.** Page directories are ordinary
    cacheable memory and are shared by every process using that region, so in a running
@@ -353,43 +354,43 @@ sequenceDiagram
 Each of the six accesses is a full L2 round trip, and because the MMU holds one credit token
 shared with TLB invalidate traffic, they are strictly serial.
 
-### 2.4.7 What a reviewer will probe
+### 2.4.7 Design questions this raises
 
-Answered honestly, including where this implementation falls short.
+Six questions the cost analysis above invites, and where each is settled.
 
-**"Why is there no page-walk cache?"**
+**Why is there no page-walk cache?**
 Microwatt has one — a 256-entry cache of *intermediate* directory entries, so a walk in a
-nearby address region can start partway down the tree. This port does not. It is the first
-optimisation to revisit, and the omission is deliberate scope control rather than an
-oversight. See [00-README](00-README.md#status-and-limitations).
+nearby address region can start partway down the tree. This port does not. The omission is
+scope control, not oversight, and it is the first optimisation to revisit. See
+[00-README](00-README.md#status-and-limitations).
 
-**"Why not use larger pages and shorten the walk?"**
+**Why not use larger pages and shorten the walk?**
 A 2 MB leaf ends the walk one level early and covers 512× the address range per TLB entry.
-Radix does produce 2 MB leaves — but A2O cannot represent that size: its size field encodes
-log₄(size/1 kB), so 2 MB has no encoding at all, and the reload datapath keeps only three of
-those bits anyway. Leaves are demoted to the largest representable sub-page. Full argument in
+Radix does produce 2 MB leaves. A2O cannot represent that size: its size field encodes
+log₄(size/1 kB), and 2 MB is 2¹¹ × 1 kB, whose log₄ is 5.5 — no encoding exists. The reload
+datapath keeps only three of those bits in any case. Leaves are demoted to the largest
+representable sub-page. Full argument in
 [03-datapath](03-datapath.md#36-leaf-size-demotion).
 
-**"Can the levels be overlapped?"**
-Not within one walk — that is what §2.4.5 is about. *Across* walks, yes: the module has two
-walk contexts and A2O provides two L2 core tags, so two walks (one per thread) can be in
-flight simultaneously. That is the limit; the core tag is the only mechanism by which
+**Can the levels be overlapped?**
+Not within one walk — that is what §2.4.5 establishes. Across walks, yes: the module has two
+walk contexts and A2O provides two L2 core tags, so two walks, one per thread, can be in
+flight simultaneously. That is the limit. The core tag is the only mechanism by which
 returning data identifies itself.
 
-**"Why have an ERAT at all if there is a TLB?"**
+**Why have an ERAT at all if there is a TLB?**
 Latency and isolation. The ERAT sits next to the pipeline and answers in the common case
-without a shared-structure access; it is also per-thread, so one thread's working set cannot
+without a shared-structure access. It is also per-thread, so one thread's working set cannot
 evict another's from the fast path. The TLB is larger, shared, and backs both ERATs.
 
-**"What happens if the walk faults, or the instruction is flushed part-way through?"**
+**What happens if the walk faults, or the instruction is flushed part-way through?**
 Every termination path — success, architected fault, flush, invalidate, watchdog timeout —
 returns through the same handshake. See
-[§2.6](#26-why-every-exit-goes-through-the-same-handshake); it is the single most important
-safety property in the module.
+[§2.6](#26-why-every-exit-goes-through-the-same-handshake).
 
-**"How does this compare with what Microwatt does?"**
-The tree walk itself is a faithful transcription — verified against a direct model of the
-Microwatt source over 400 random vectors
+**How does this compare with what Microwatt does?**
+The tree walk itself is a transcription, verified against a direct model of the Microwatt
+source over 400 random vectors
 ([06-verification](06-verification.md#62-fidelity-tb_mathv)). What differs is everything
 around it: Microwatt is in-order and single-threaded, so it needs none of the kill,
 reservation or watchdog machinery this module carries.
@@ -506,7 +507,7 @@ begin
 end
 ```
 
-The absence of a level counter is worth noting because it looks like an omission and is not.
+The absence of a level counter looks like an omission and is not.
 The remaining shift amount *is* the loop variable: it starts at `RTS + 19 − RPDS`, decreases
 by `NLS` at each level, and the guard `NLS > shift` catches a tree that claims more index
 bits than remain. A four-level limit is architectural, not structural — the same logic

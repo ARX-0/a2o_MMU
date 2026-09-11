@@ -87,16 +87,23 @@ A single indexed part-select replaces Microwatt's three-stage mux. The zero padd
 guarantees the base stays in range for any 6-bit shift value, so no special cases are
 needed.
 
-## 3.3 The three masks
+## 3.3 The four masks
 
-All three are generated bit-by-bit in `generate` loops, each with its index relation to the
-Microwatt original stated in a comment.
+All four are generated bit-by-bit in `generate` loops, each with its index relation to the
+Microwatt original stated in a comment. All four are compared against the reference model by
+`tb_math.v` ([06-verification](06-verification.md#62-fidelity-tb_mathv)).
 
 | Mask | Width | Purpose | A2O ↔ Microwatt relation |
 |---|---:|---|---|
 | `mask` | 16 | Select this level's index bits within the directory base | `mask[k] = mask_mw(15−k)` |
 | `fm30` | 30 | Merge EA bits into the RPN for pages larger than 4 kB | `fm30[r] = fm_mw(29−r)` |
+| `fm4` | 4 | Select how many PID bits may override the process-table base | `fm4[t] = fm_mw(3−t)` |
 | `segmask` | 31 | Check that EA bits above `31+RTS` are zero | `segmask[s] = fm_mw(30−s)` |
+
+`fm4` (`mmq_rtw.v:765`) is the one with no direct analogue in the level-descent path. It is
+used only in `prtable_addr` (§3.4), where `shift` holds `PRTS` — the partition table's size
+field — and it bounds how much of the `PID` may index the process table
+(`mmu.vhdl:1823-1826`).
 
 ```verilog
 // index mask -- Microwatt addrmaskgen, mmu.vhdl:1417-1432
@@ -192,7 +199,7 @@ port — this is a documented property of both designs, not an omission here.
 
 ```verilog
 // P0-2: R and C are CHECKED, never written back. There is no store path
-// from the MMU (lq_imq.v:107) and no pending-memory-write mechanism, so a
+// from the MMU (lq_imq.v:110) and no pending-memory-write mechanism, so a
 // hardware R/C update would be an architecturally visible write on behalf
 // of a non-committed instruction. Software must set them, as in Microwatt.
 // Conservative: the A2O tag carries no load/store bit, so C is required
@@ -202,7 +209,7 @@ assign rc_ok = pde_rref & pde_c;
 ```
 
 The conservatism is forced: A2O's translation request tag carries no load/store
-indication, so the walker cannot know whether `C` is actually required. Requiring it
+indication, so the walker cannot know whether `C` is required. Requiring it
 unconditionally means a store to a page with `C` clear faults — which is correct — and a
 *load* to such a page also faults, which is stricter than the architecture demands. The
 alternative, installing the entry and letting the ERAT decide, creates a stale-permission
@@ -246,7 +253,7 @@ Two independent limits:
 
 2 MB is log₄ = 5.5. It has no encoding at all.
 
-**The reload path keeps only three size bits.** `mmq_tlb_cmp.v:3486` builds the TLB way's
+**The reload path keeps only three size bits.** `mmq_tlb_cmp.v:3491` builds the TLB way's
 size field as `{1'b0, pte[ptepos_size+0 : +2]}`, so codes above `0111` cannot survive —
 1 GB is unreachable through this path too.
 
@@ -267,10 +274,28 @@ assign inst_shift = (ctx_shift_q[i] >= 6'd12) ? InstShift_16MB :
                                                 RadixShift_4KB;
 ```
 
-**Demotion is always architecturally safe.** A smaller page maps a strict subset of the same
-translation with identical permissions and attributes. Software observes correct behaviour;
-the only cost is more TLB misses on large pages, since one 2 MB region now needs two 1 MB
-entries.
+**Demotion is safe, and the argument is worth stating in full** because it is what justifies
+deviating from the page size the tree actually specifies.
+
+A radix leaf entry supplies one RPN together with one set of permission and attribute bits
+that apply uniformly across the whole page it describes. Installing a smaller page at the
+same effective address therefore translates a strict subset of the addresses the leaf
+covers, to the corresponding subset of the real addresses, under the *same* permission and
+attribute bits — because those bits come from the same leaf entry either way. No effective
+address is mapped that the leaf did not map, none is mapped to a different real address, and
+no access is permitted that the leaf did not permit.
+
+The cost is TLB occupancy and miss rate: one 2 MB region now needs two 1 MB entries, each
+faulting and walking separately. Nothing software can observe about the translation itself
+changes.
+
+This is an argument from the structure of a leaf entry, not a citation. No ISA text
+sanctioning demotion has been identified, and **the demotion path is not covered by the
+testbenches**: `tb_walk.v` checks only that a 4 kB leaf installs with size code `0001`
+(`tb_walk.v:227`). No scenario builds a 2 MB leaf and confirms the demoted entry resolves to
+the same real address. The claim above therefore rests on the reasoning alone, and demotion
+is the largest untested behaviour in this port. See
+[06-verification §6.8](06-verification.md#68-what-the-verification-does-not-cover).
 
 The subtlety is that `fm30` must be built from the **installed** shift, not the leaf shift.
 Using the smaller shift merges more effective-address bits into the RPN, which is exactly
@@ -278,7 +303,7 @@ what produces the correct sub-page translation. Getting this backwards would map
 1 MB of the 2 MB region.
 
 Lifting the restriction requires widening the way's size field through
-`mmq_tlb_cmp.v:3486`/`:3527` and adding new compare-mask entries in
+`mmq_tlb_cmp.v:3491`/`:3532` and adding new compare-mask entries in
 `mmq_tlb_matchline.v:194-224`. The matchline's pre-decoded mask scheme could express 2 MB;
 the four-bit size code cannot.
 

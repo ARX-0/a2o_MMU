@@ -3,31 +3,45 @@
 Documentation set for `mmq_rtw.v` — a Power ISA 3.1C radix multi-level page-table walker
 added to the OpenPOWER A2O core, ported from Microwatt's `mmu.vhdl`.
 
+This page assumes no prior familiarity with A2O, Book-E, or radix translation. Every
+abbreviation is expanded where it first appears, and collected in the
+[glossary](#glossary) at the end.
+
 ---
 
 ## Executive summary
 
-**The problem.** The A2O core implements Power ISA 2.07 using Book III-E. Its own release
-notes name *radix translation* as the first thing required for ISA 3.0c/3.1 compliance. Its
-MMU is a Book-E embedded MMU whose hardware tablewalker performs a **single-level** walk:
-software installs an indirect TLB entry whose RPN field is the base of a flat page-table
-array, and the walker issues exactly one 8-byte load. There is no root-pointer register, no
-level counter, and no multi-level descent anywhere in the design.
+**The problem.** The A2O core is an out-of-order POWER processor released by IBM through the
+OpenPOWER Foundation. It implements Power ISA 2.07 using Book III-E — the *embedded* variant
+of the Power ISA's supervisor book, which specifies a different address-translation mechanism
+from the server variant used by ISA 3.0 onwards. A2O's own release notes name *radix
+translation* as the first thing required for ISA 3.0c/3.1 compliance.
+
+Its MMU (Memory Management Unit — the hardware that turns the addresses a program uses into
+the addresses memory actually has) is a Book-E embedded MMU whose hardware tablewalker
+performs a **single-level** walk: software installs an indirect entry in the TLB (Translation
+Lookaside Buffer, the on-chip cache of recently used translations) whose RPN (Real Page
+Number) field is the base of a flat page-table array, and the walker issues exactly one
+8-byte load. There is no root-pointer register, no level counter, and no multi-level descent
+anywhere in the design.
 
 **What was built.** A new module, `mmq_rtw.v`, implementing the full radix tree walk —
-`PTCR` → partition table → process table → up to four levels of page-directory descent →
-leaf PTE — transcribed from Microwatt's `mmu.vhdl`, and adapted to A2O's out-of-order,
-two-threaded environment. It sits beside the existing Book-E walker (`mmq_htw.v`), which is
-left untouched and fully functional; a boot-configuration bit selects between them.
+`PTCR` (Partition Table Control Register, a Special Purpose Register holding the root of the
+whole structure) → partition table → process table → up to four levels of page-directory
+descent → leaf PTE (Page Table Entry, the record that finally supplies a real address and its
+access permissions) — transcribed from Microwatt's `mmu.vhdl`, and adapted to A2O's
+out-of-order, two-threaded environment. It sits beside the existing Book-E walker
+(`mmq_htw.v`), which is left untouched and fully functional; a boot-configuration bit selects
+between them.
 
 **Scale of the change.**
 
 | File | Lines added | What changed |
 |---|---:|---|
-| `work/mmq_rtw.v` | 1978 | **New** — the radix walker |
+| `work/mmq_rtw.v` | 1979 | **New** — the radix walker |
 | `work/mmq.v` | 210 | Instantiation, walker mux, exception merge |
-| `work/mmq_spr.v` | 99 | PTCR (SPR 464), invalidate strobes, radix enable bit |
-| `work/mmq_tlb_cmp.v` | 26 | Walker handoff, TLB-miss suppression |
+| `work/mmq_spr.v` | 101 | PTCR (SPR 464), invalidate strobes, radix enable bit |
+| `work/mmq_tlb_cmp.v` | 27 | Walker handoff, TLB-miss suppression |
 | `work/mmu_a2o.vh` | 23 | Radix PDE/PTE field definitions |
 | `work/xu_spr_cspr.v` | 19 | PTCR decode and privilege qualification |
 | `sim/` | 524 | Two testbenches and a run script |
@@ -37,13 +51,17 @@ direct model of the Microwatt source, plus 11 end-to-end walk scenarios against 
 behavioural L2 and a real radix tree in memory. All pass. The `mmq` hierarchy lints with the
 same error count as pristine upstream A2O.
 
-### Three findings worth reporting
+### Three structural findings
 
 1. **A2O cannot represent a 2 MB page.** Its TLB size field encodes log₄(size/1 KB), so only
-   power-of-four sizes exist, and the page-table-reload datapath keeps only three of those
-   bits, capping the reachable size at 16 MB. Radix produces 4 K/64 K/2 M/1 G. Leaves are
-   therefore installed at the largest representable sub-page size, which is always
-   architecturally safe. See [03-datapath](03-datapath.md#36-leaf-size-demotion).
+   sizes that are an integer power of four times 1 KB have an encoding at all. 2 MB is 2¹¹ ×
+   1 KB, and log₄ of that is 5.5 — there is no encoding for it. The page-table-reload datapath
+   then keeps only three of those bits, capping the size reachable through that path at 16 MB.
+   Radix produces 4 K/64 K/2 M/1 G leaves. Leaves are therefore installed at the largest
+   representable sub-page size. The argument that this is safe is structural — a smaller page
+   maps a subset of the same translation under the same permission bits — but it rests on
+   reasoning rather than an ISA citation, and **the demotion path is not covered by any
+   testbench**. See [03-datapath](03-datapath.md#36-leaf-size-demotion).
 
 2. **Porting into an out-of-order core is the hard part, not the algorithm.** Microwatt
    dispatches TLB invalidations through the *same* state machine as a walk, so a walk and an
@@ -52,11 +70,11 @@ same error count as pristine upstream A2O.
    is roughly a hundred times longer. Five distinct hazard classes had to be addressed before
    the walker was safe. See [05-ooo-safety](05-ooo-safety.md).
 
-3. **The Microwatt and A2O SPR spaces collide in nine places** — A2O's Book-E debug, timer
-   and MMU-control register blocks occupy exactly the numbers ISA 3.x assigns to its
-   hypervisor registers, HEIR and PIR. None of the collisions block this port: exactly one
-   new SPR number is claimed, PTCR = 464, and it is free.
-   See [04-integration](04-integration.md#44-spr-work).
+3. **The Microwatt and A2O SPR spaces collide in nine places** — A2O's Book-E debug (304–319),
+   timer (336–343) and MMU-control (1012–1023) register blocks occupy exactly the numbers ISA
+   3.x assigns to its hypervisor registers, HEIR and PIR. None of the collisions block this
+   port: exactly one new SPR number is claimed, PTCR = 464, and it is free.
+   See [04-integration](04-integration.md#44-spr-work) for the register-by-register table.
 
 ---
 
@@ -78,7 +96,8 @@ reference depth.
 
 ## Status and limitations
 
-Stated explicitly, because the boundaries matter as much as the achievements.
+What works, what was refused on purpose, and what is simply not done yet. These are three
+different things and are kept under three different headings.
 
 ### Working
 
@@ -88,13 +107,16 @@ Stated explicitly, because the boundaries matter as much as the achievements.
 - Book-E path **unaffected** — with the radix enable clear, the walker is inert and A2O
   behaves exactly as before.
 - Out-of-order safety: flush mid-walk, invalidate mid-walk, watchdog timeout, and bounded
-  ECC retry are all implemented and tested.
+  ECC (Error Correcting Code) retry are all implemented and tested.
 
 ### Deliberately refused
 
-- **Guest-mode (`MSR[GS]=1`) radix walks fault rather than proceed.** In guest mode every
-  page-table address after the root is read out of guest-writable memory and must be
-  validated through the LRAT before leaving the core. A2O's LRAT (`mmq_tlb_lrat.v`) is a
+- **Guest-mode radix walks fault rather than proceed.** Guest mode is `MSR[GS]=1` — the
+  guest-state bit of the Machine State Register, set when the core is running a virtualised
+  guest rather than the hypervisor. In guest mode every page-table address after the root is
+  read out of guest-writable memory and must be validated through the LRAT (Logical to Real
+  Address Translation, A2O's hypervisor-level translation array) before leaving the core.
+  A2O's LRAT (`mmq_tlb_lrat.v`) is a
   *pipelined* lookup driven from the TLB tag pipeline, not a standalone request port, so a
   per-level check needs a second compare port rather than a wire. Until that exists the
   walker's LRAT-hit input is tied low, so guest walks raise `lrat_miss`. This fails closed,
@@ -108,9 +130,11 @@ Stated explicitly, because the boundaries matter as much as the achievements.
   architecturally visible memory write issued on behalf of an instruction that has not
   committed, and A2O has no mechanism to defer it. Microwatt behaves the same way. See
   [05-ooo-safety](05-ooo-safety.md#p0-2--rc-writeback).
-- **`mmq_inval.v` re-verification.** The invalidate sequencer contains six deliberate
-  "service the tablewalker or deadlock" detours. A multi-level walker exercises them four to
-  five times harder. This has not been re-examined.
+- **`mmq_inval.v` re-verification.** The invalidate sequencer contains eight deliberate
+  "service the tablewalker or deadlock" detours — four commented "could hang waiting on
+  empty" (`mmq_inval.v:1037, 1133, 1236, 1338`) and four commented "could be ucode"
+  (`:1019, 1102, 1219, 1324`). A multi-level walker exercises them four to five times harder.
+  This has not been re-examined.
 - **Invalidate matching is conservative.** Any TLB invalidate snoop currently discards every
   in-flight walk. Correct, but coarser than necessary.
 - **No whole-core or FPGA simulation.** All testing is at module level. A full `mmq`
@@ -148,3 +172,38 @@ git log --oneline master..a2o_MMU  # the six commits, in dependency order
 
 Because this branch is cut directly from upstream `master` and touches nothing else, that
 diff **is** the port -- there is no unrelated content to filter out.
+
+A one-page summary of the branch, for a reader arriving from the repository root, is in
+[RADIX-MMU.md](../../../RADIX-MMU.md).
+
+---
+
+## Glossary
+
+Every term is also expanded where it first appears in the text. This table is for looking one
+up again later.
+
+| Term | Expansion | What it is here |
+|---|---|---|
+| **A2O** | — | The out-of-order POWER processor core this work modifies |
+| **Book-E / Book III-E** | — | The *embedded* variant of the Power ISA supervisor book. A2O implements it; ISA 3.0 onward specifies the server variant instead |
+| **ECC** | Error Correcting Code | Detects and corrects bit errors in memory. An uncorrectable one on a table read is a fault |
+| **EMQ** | ERAT Miss Queue | Four entries in the load/store unit, one per outstanding translation miss. Freed only by a returning reload |
+| **ERAT** | Effective-to-Real Address Translation | The small per-thread translation cache next to the pipeline, ahead of the TLB |
+| **E.PT** | — | The Book-E category defining the indirect-TLB-entry page-table scheme A2O already had |
+| **LPID** | Logical Partition Identifier | Names the partition (guest) a translation belongs to |
+| **LRAT** | Logical to Real Address Translation | A2O's 8-entry hypervisor-level translation array |
+| **LSU** | Load/Store Unit | Issues the walker's memory requests; source of the single credit token |
+| **MMU** | Memory Management Unit | The hardware translating program addresses to memory addresses |
+| **MSR** | Machine State Register | Architected processor state. `MSR[GS]` is the guest-state bit |
+| **NLS** | Next Level Size | Index width of the level below, carried in each PDE |
+| **PDE** | Page Directory Entry | A non-leaf tree entry; supplies the base of the next level |
+| **PID** | Process Identifier | Selects a process's entry in the process table |
+| **PTCR** | Partition Table Control Register | SPR 464; the root of the whole structure |
+| **PTE** | Page Table Entry | A leaf entry; supplies a real page number and access permissions |
+| **R / C bits** | Referenced / Changed | Record that a page has been read or written. This walker checks them, never sets them |
+| **RPDS** | Root Page Directory Size | Index width of the tree's first level |
+| **RPN** | Real Page Number | The physical page a translation resolves to |
+| **RTS** | Radix Tree Size | Sets the address-space width, as `RTS + 31` bits |
+| **SPR** | Special Purpose Register | An architected control register, accessed by `mfspr` / `mtspr` |
+| **TLB** | Translation Lookaside Buffer | The core's 512-entry, 4-way shared translation cache, behind the ERATs |

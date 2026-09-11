@@ -1,7 +1,9 @@
 # Radix page-table walk for the A2O MMU — branch `a2o_MMU`
 
 This branch adds a **Power ISA 3.1C radix multi-level page-table walker** to the OpenPOWER
-A2O core, ported from Microwatt's `mmu.vhdl`.
+A2O core, ported from Microwatt's `mmu.vhdl`. A2O is the out-of-order POWER processor core
+released by IBM through the OpenPOWER Foundation; an MMU (Memory Management Unit) is the
+hardware that turns the addresses a program uses into the addresses memory actually has.
 
 It is cut directly from upstream `master` and touches nothing unrelated, so
 
@@ -9,15 +11,26 @@ It is cut directly from upstream `master` and touches nothing unrelated, so
 git diff master..a2o_MMU
 ```
 
-**is** the change set — 10 files, roughly 2 900 added lines, and no filtering required.
+**is** the change set, with no filtering required:
+
+| Measured over | Files | Lines |
+|---|---:|---|
+| Everything on the branch | 19 | +5046 / −48 |
+| RTL and testbenches (what an upstream PR would carry) | 9 | +2883 / −48 |
+| RTL alone (`rel/src/verilog/work/`) | 6 | +2359 / −48 |
+
+The difference is documentation and two diagram images.
 
 ---
 
 ## Why
 
-A2O implements Power ISA 2.07 with a Book-III-E embedded MMU. Its hardware tablewalker
-(`mmq_htw.v`) performs a **single-level** walk: software installs an indirect TLB entry
-whose RPN field is the base of a flat page-table array, and the walker issues exactly one
+A2O implements Power ISA 2.07 with a Book-III-E embedded MMU. Book III-E is the *embedded*
+variant of the Power ISA's supervisor book; it defines a different translation mechanism
+from the server variant that ISA 3.0 onwards specifies. A2O's hardware tablewalker
+(`mmq_htw.v`) performs a **single-level** walk: software installs an indirect entry in the
+TLB (Translation Lookaside Buffer, the on-chip cache of translations) whose RPN (Real Page
+Number) field is the base of a flat page-table array, and the walker issues exactly one
 8-byte load. There is no root-pointer register, no level counter, and no multi-level descent
 anywhere in the design. A2O's own release notes name radix translation as the first
 requirement for ISA 3.0c/3.1 compliance.
@@ -30,17 +43,21 @@ core built from this branch behaves exactly as upstream unless the bit is delibe
 
 | File | Lines | What |
 |---|---:|---|
-| `rel/src/verilog/work/mmq_rtw.v` | +1978 | **New** — the radix walker |
+| `rel/src/verilog/work/mmq_rtw.v` | +1979 | **New** — the radix walker |
 | `rel/src/verilog/work/mmq.v` | +210 −18 | Instantiation, walker mux, exception merge |
-| `rel/src/verilog/work/mmq_spr.v` | +99 −15 | PTCR (SPR 464), invalidate strobes, radix enable |
-| `rel/src/verilog/work/mmq_tlb_cmp.v` | +26 −1 | Walker handoff, TLB-miss suppression |
+| `rel/src/verilog/work/mmq_spr.v` | +101 −15 | PTCR (SPR 464), invalidate strobes, radix enable |
+| `rel/src/verilog/work/mmq_tlb_cmp.v` | +27 −1 | Walker handoff, TLB-miss suppression |
 | `rel/src/verilog/work/mmu_a2o.vh` | +23 | Radix PDE/PTE field definitions |
 | `rel/src/verilog/work/xu_spr_cspr.v` | +19 −14 | PTCR decode and privilege qualification |
 | `rel/src/verilog/sim/` | +524 | Two testbenches and a run script |
 | `rel/doc/radix-mmu/` | — | This documentation set |
 
-Exactly **one** new SPR number is claimed: PTCR = 464, the ISA 3.1C number, which is free in
-A2O.
+Exactly **one** new SPR (Special Purpose Register — an architected control register read and
+written by `mfspr`/`mtspr`) number is claimed: PTCR (Partition Table Control Register) = 464,
+the ISA 3.1C number, which is free in A2O. The nine places where Microwatt's SPR numbering
+collides with A2O's are listed in
+[04-integration](rel/doc/radix-mmu/04-integration.md#44-spr-work); none of them blocks this
+port.
 
 ## How to read it
 
@@ -86,17 +103,25 @@ the source tree.
 
 ## What this does *not* cover
 
-Stated up front, because the boundaries matter as much as the achievements:
+The gaps, stated up front:
 
 - **No whole-core simulation.** All testing is `mmq_rtw` in isolation against a behavioural
   L2. The handoff from `mmq_tlb_cmp`, the walker mux in `mmq.v`, and the exception merge are
   lint-clean but **have not been simulated**.
 - **No FPGA run** — no synthesis or timing-closure results.
-- **Guest-mode (`MSR[GS]=1`) walks are deliberately refused**, not implemented. They raise
-  `lrat_miss`, because per-level LRAT validation needs a second LRAT compare port that does
-  not exist yet. This fails closed.
-- **No hardware reference/change bit writeback.** Software must set R and C. Microwatt
-  behaves the same way.
+- **Guest-mode (`MSR[GS]=1`, the Machine State Register's guest-state bit) walks are
+  deliberately refused**, not implemented. They raise `lrat_miss`. The LRAT (Logical to Real
+  Address Translation) is A2O's hypervisor-level translation array; validating every level of
+  a guest walk through it needs a second compare port that does not exist yet. This fails
+  closed — the alternative would be issuing memory requests to guest-supplied addresses
+  without validation.
+- **No hardware reference/change bit writeback.** The R (referenced) and C (changed) bits in
+  a page-table entry record that a page has been read or written. This walker checks them but
+  never sets them, so software must. Microwatt behaves the same way.
+- **Leaf-size demotion is untested.** Radix produces 2 MB leaves; A2O has no encoding for that
+  size, so leaves are installed at the largest representable sub-page instead. The safety
+  argument is structural rather than cited, and no testbench scenario builds a 2 MB leaf and
+  checks the demoted entry. This is the most significant untested behaviour in the port.
 - **No page-walk cache.** Cold-walk latency is four to six serial L2 round trips.
 
 The full list, with reasoning, is in

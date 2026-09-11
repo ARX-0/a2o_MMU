@@ -86,7 +86,7 @@ This is the least obvious part of the integration. The Book-E handoff fires on a
 **indirect-entry hit**:
 
 ```verilog
-// mmq_tlb_cmp.v:5071 -- the existing Book-E condition
+// mmq_tlb_cmp.v:5079 -- the existing Book-E condition
 assign tlb_htw_req_valid = ( ... & tlb_tag4_q[`tagpos_ind] == 1'b1 &
                              tlb_tag4_q[`tagpos_nonspec] == 1'b1 &
                              tlb_tag4_wayhit_q[`TLB_WAYS] == 1'b1 & ... );

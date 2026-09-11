@@ -7,7 +7,9 @@
 ## 1.1 Why this project exists
 
 The A2O core is an out-of-order OpenPOWER processor implementing **Power ISA 2.07, Book
-III-E** (the *embedded* book). Its upstream release notes state the compliance gap directly:
+III-E** (the *embedded* book). Its upstream release notes — the repository's own top-level
+`README.md`, section "Compliancy", as of the `master` commit this branch is cut from — state
+the compliance gap directly:
 
 > The A2O core is compliant to Power ISA 2.07 and will need updates to be compliant with
 > either version 3.0c or 3.1. Changes will include:
@@ -35,20 +37,23 @@ PTCR (SPR 464)  ──►  partition table entry  ──►  process table entry
 
 Three fields control the shape of the tree:
 
-| Field | Where | Meaning |
-|---|---|---|
-| **RTS** | process table entry (PRTE0) | Radix Tree Size. Address space is `RTS + 31` bits |
-| **RPDS** | process table entry | Root Page Directory Size — index width of the first level |
-| **NLS** | each directory entry (PDE) | Next Level Size — index width of the level below |
+| Field | Where | Meaning | Read out at |
+|---|---|---|---|
+| **RTS** | process table entry (PRTE0) | Radix Tree Size. Address space is `RTS + 31` bits | `mmu.vhdl:1650-1655`; `mmq_rtw.v:1058` |
+| **RPDS** | process table entry | Root Page Directory Size — index width of the first level | `mmu.vhdl:1667-1672`; `mmq_rtw.v:1099` |
+| **NLS** | each directory entry (PDE) | Next Level Size — index width of the level below | `mmu.vhdl:1719-1736`; `mmq_rtw.v:1222` |
 
 Each level consumes `NLS` bits of the effective address to index an array of 8-byte entries.
 A directory entry (leaf bit clear) supplies the base of the next level; a leaf entry (leaf
 bit set) supplies the real page number and the access permissions. Legal index widths are
-5–16 bits.
+5–16 bits — the bound enforced by Microwatt at `mmu.vhdl:1668` for the root and `:1720` for
+each level below, and by this port at `mmq_rtw.v:781`.
 
 There is no fixed depth. The walk terminates when a leaf is found, and the guard against
 running off the bottom of the tree is arithmetic: the remaining shift amount decreases by
-`NLS` at each level, and a level claiming more bits than remain is a malformed tree.
+`NLS` at each level, and a level claiming more bits than remain is a malformed tree
+(`mmu.vhdl:1719-1736`). There is no level counter in either implementation; see
+[02-fsm §2.8](02-fsm.md#28-the-descend-decision-and-why-there-is-no-level-counter).
 
 ## 1.3 What A2O had instead: Book-E E.PT
 
@@ -86,7 +91,7 @@ licensed.
 Its main sequencer has twelve states:
 
 ```vhdl
--- microwatt/mmu.vhdl:29-41
+-- mmu.vhdl:29-41
 type state_t is (IDLE, DO_TLBIE, PART_TBL_READ, PART_TBL_WAIT,
                  PROC_TBL_READ, PROC_TBL_WAIT, SEGMENT_CHECK, TLBWAIT,
                  RADIX_LOOKUP, RADIX_READ_WAIT, RADIX_LOAD_TLB, RADIX_FINISH);
@@ -115,11 +120,11 @@ Neither property holds in A2O. This is the subject of [05-ooo-safety](05-ooo-saf
 
 | Aspect | Microwatt | A2O |
 |---|---|---|
-| Architecture | ISA 3.0B/3.1 **radix** | Book-E / ISA 2.06 **embedded** |
+| Architecture | ISA 3.0B/3.1 **radix** | Book-E / ISA 2.07 **embedded** |
 | Walk depth | up to **4 levels** | **1 level** (E.PT indirect entry) |
 | Root pointer | `PTCR` → partition table → process table | **none** — base is in an IND=1 TLB entry |
 | Main FSM | 12 states | 33 states, 6-bit Gray-coded (`mmq_tlb_ctl.v:343-375`) |
-| Main TLB | 256 entries, 4-way, 4 kB only | **512 entries, 4-way, 128 rows**, 8 page sizes |
+| Main TLB | 256 entries, 4-way, 4 kB only | **512 entries, 4-way, 128 rows**, 5 page sizes |
 | TLB entry | 64-bit PTE | **168-bit way** (`mmu_a2o.vh:187-206`) |
 | TLB tag | EA[51:20] + 12-bit PID | **122-bit tag** (`mmu_a2o.vh:148-185`) |
 | Match | RAM read + comparator | **4× matchline CAM**, per-field enables |
@@ -129,7 +134,7 @@ Neither property holds in A2O. This is the subject of [05-ooo-safety](05-ooo-saf
 | Data return | 64-bit word | 4× 128-bit quadword beats on the reload bus |
 | R/C bits | checked only, no writeback | folded into permissions at reload, no writeback |
 | Real address | 56 bits | **42 bits** (`mmu_a2o.vh:108`) |
-| Page sizes | 4 K / 64 K / 2 M / 1 G | 4 K / 64 K / 1 M / 16 M / 1 G |
+| Page sizes | 4 K / 64 K / 2 M / 1 G | 4 K / 64 K / 1 M / 16 M / 1 G (`mmq_spr.v:382`) |
 | Threads | 1 | **2**, out-of-order |
 
 The rows in bold type are the ones that forced design decisions. Three deserve emphasis:

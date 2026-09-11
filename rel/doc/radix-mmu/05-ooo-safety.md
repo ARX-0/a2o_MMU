@@ -2,9 +2,9 @@
 
 [← 04 Integration](04-integration.md) · [Index](00-README.md) · Next: [06 — Verification](06-verification.md)
 
-Transcribing the radix algorithm was the straightforward part of this project. Making it
-safe in an out-of-order, two-threaded core was not. This document explains why, and what the
-walker does about it.
+The radix algorithm is specified in the ISA and transcribing it is mechanical. Making it safe
+in an out-of-order, two-threaded core is not, and none of it is written down anywhere. This
+document explains what breaks and what the walker does about it.
 
 ---
 
@@ -13,7 +13,7 @@ walker does about it.
 Microwatt dispatches TLB invalidations **through the same state machine as a walk**:
 
 ```vhdl
--- microwatt/mmu.vhdl:1524-1525
+-- mmu.vhdl:1524-1525
 v.tlbie_req := '1';
 v.state := DO_TLBIE;
 ```
@@ -37,7 +37,7 @@ Reading the existing MMU establishes two invariants that any new walker must pre
 
 ### Rule 1 — never leave the core for a speculative request
 
-The `nonspec` bit gates the walk handoff absolutely (`mmq_tlb_cmp.v:5071`) and gates even
+The `nonspec` bit gates the walk handoff absolutely (`mmq_tlb_cmp.v:5079`) and gates even
 the *search* for an indirect entry (`mmq_tlb_ctl.v:1603, 1641, 1679, 1717, 1750`).
 
 Critically, `nonspec` does **not** mean "committed". It means *"this request belongs to the
@@ -71,7 +71,7 @@ abort capability. `mmq_rtw` does both.
 The tag-pipeline flush signals `tlb_ctl_tag{1,2,3,4}_flush_sig` are **hard-wired to zero**
 for the `derat`, `ierat`, `snoop` and `ptereload` tag types (`mmq_tlb_ctl.v:2332-2342`).
 Only architected TLB-management instructions are flushable. The RTL states it outright at
-`mmq_tlb_ctl.v:2057`: *"tag0 (ex2) tlbre,tlbwe (flushable), or ptereload (not flushable)"*.
+`mmq_tlb_ctl.v:2009`: *"tag0 (ex2) tlbre,tlbwe (flushable), or ptereload (not flushable)"*.
 
 Consequently `tlb_seq_abort` can never fire for a walk, and the flush accumulation chain is
 only five latches deep (`:926-971`) — the window closes about five cycles after the request
@@ -102,7 +102,7 @@ interrupt was actually taken. Six per-thread pending flags hold MAS, LPER and MM
 released only by a type-matched exception-taken code and cleared on flush.
 
 That machinery covers **SPR latches only**. There is no pending-memory-write path anywhere in
-the MMU, and the MMU→LSU port is load-only (`lq_imq.v:107` decodes the type as TLBIVAX,
+the MMU, and the MMU→LSU port is load-only (`lq_imq.v:110` decodes the type as TLBIVAX,
 TLBI_COMPLETE, LOAD, LOAD).
 
 **What the walker does.** It checks R and C but never writes them; software must set them.
@@ -112,7 +112,11 @@ asynchronous interrupt can still flush a `nonspec` request, and a memory write i
 behalf could not be undone.
 
 The architectural consequence is that this is a **software-managed-R/C radix
-implementation**, a documented deviation from ISA 3.1 where hardware normally sets them.
+implementation**. Microwatt behaves identically — it tests R and C and faults on them, but
+contains no path that writes them back — so this port matches its reference rather than
+diverging from it. No ISA section permitting software-managed R/C has been identified, and
+the specific ISA 3.1 requirement has not been re-derived here; this is recorded as a known
+deviation, not as a sanctioned option.
 
 ### P0-3 — the EMQ entry is held for the whole walk
 
@@ -149,7 +153,7 @@ assign ctx_inv_match[i] = inv_seq_inprogress &
                             ((inv_pid == ctx_pid) | (inv_pid == {`PID_WIDTH{1'b0}}))));
 ```
 
-Redoing a walk after an invalidate is correct and rare. Being clever here would be a
+Redoing a walk after an invalidate is correct and rare. A narrower match would trade a
 correctness risk for a negligible performance gain.
 
 ### P0-5 — one credit token serialises everything
@@ -203,8 +207,15 @@ assign ctx_wd_run[i] = ctx_valid_q[i] &
                        (ctx_seq_q[i] != RtwSeq_Killed) & (ctx_seq_q[i] != RtwSeq_Timeout);
 ```
 
-It trips at 4096 cycles, forces `RtwSeq_Timeout`, returns a reload so the EMQ entry is freed,
+The counter is 12 bits (`RTW_WD_WIDTH`, `mmq_rtw.v:56`) and is reset on every state change,
+so it measures time since last progress. `ctx_wd_expired` asserts when it reaches all-ones
+(`mmq_rtw.v:899`) — that is 4096 cycles without a state change, counting the cycle the
+counter is zero. Expiry forces `RtwSeq_Timeout`, returns a reload so the EMQ entry is freed,
 and raises a machine check.
+
+The testbench reports 4097 cycles ([06-verification §6.3](06-verification.md#63-behaviour-tb_walkv))
+because it measures end to end, from the request being presented to `pte_valid` returning —
+one cycle more than the counter threshold itself.
 
 ## 5.5 Two contexts, statically bound to threads
 
@@ -260,15 +271,15 @@ functional while silently trusting guest-supplied addresses.
 
 ## 5.7 Summary
 
-Two sentences worth carrying away:
+The two rules this document reduces to:
 
 1. **Never leave the core on behalf of a speculative request, and never update architected
    state until the completion unit confirms the exception was taken.**
 2. **Walks are not abortable — they are made harmless.** The reservation bit, the TLB-write
-   gate and the never-recycled queue entry are the three legs of that stool. Lengthening the
-   walk by two orders of magnitude means strengthening all three.
+   gate and the never-recycled queue entry are the three mechanisms that do it. Lengthening
+   the walk by two orders of magnitude means strengthening all three.
 
 ---
 
-**Not covered here:** the evidence that these mechanisms actually work
+**Not covered here:** the evidence that these mechanisms work
 ([06](06-verification.md)).
