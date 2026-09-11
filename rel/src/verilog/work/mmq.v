@@ -3211,7 +3211,7 @@ assign mm_xu_ord_write_done = mm_xu_ord_write_done_sig[0:`THREADS - 1];
       // pt_fault -- the architected "page table fault" -- while lrat_miss maps
       // exactly and the walker's machine checks join tlb_par_err.  Collapsing is
       // safe: software re-reads the PTE and re-walks either way.  Preserving the
-      // distinct cause would need new MESR1 bits (PLAN.md 3.6).
+      // distinct cause would need new MESR1 bits (rel/doc/radix-mmu/04-integration.md 4.5).
       wire [0:`MM_THREADS-1] cmpx_pt_fault_sig, cmpx_lrat_miss_sig, cmpx_tlb_par_err_sig;
       wire [0:`MM_THREADS-1] cmpx_esr_pt_sig, cmpx_esr_data_sig;
       wire                   cmpx_pt_fault_ored_sig, cmpx_lrat_miss_ored_sig;

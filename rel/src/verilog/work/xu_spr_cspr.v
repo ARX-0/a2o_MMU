@@ -1826,7 +1826,7 @@ wire [0:0] core_event;
 	assign ex2_mas8_mas1_rdec  = (ex2_instr[11:20] == 10'b1110101010);   //  349
 	assign ex2_mmucfg_rdec     = (ex2_instr[11:20] == 10'b1011111111);   // 1015
 	assign ex2_mmucr0_rdec     = (ex2_instr[11:20] == 10'b1110011111);   // 1020
-	// PTCR, Power ISA 3.1C radix root pointer. 464 is free in A2O (PLAN.md 3.5).
+	// PTCR, Power ISA 3.1C radix root pointer. 464 is free in A2O (rel/doc/radix-mmu/04-integration.md 4.4).
 	assign ex2_ptcr_rdec       = (ex2_instr[11:20] == 10'b1000001110);   //  464
 	assign ex2_mmucr1_rdec     = (ex2_instr[11:20] == 10'b1110111111);   // 1021
 	assign ex2_mmucr2_rdec     = (ex2_instr[11:20] == 10'b1111011111);   // 1022

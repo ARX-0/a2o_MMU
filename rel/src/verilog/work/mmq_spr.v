@@ -338,7 +338,8 @@ module mmq_spr(
       //constant Spr_Addr_LPID : std_ulogic_vector(0 to 9) :=  1001111110 ; -- dec 638
       parameter [0:9]                      Spr_Addr_LPID = 10'b0101010010;
       // Power ISA 3.1C radix root pointer.  464 is verified free in A2O -- nothing
-      // in 352-436 or 448-511 is decoded anywhere in the core (PLAN.md 3.5/3.7).
+      // in 352-436 or 448-511 is decoded anywhere in the core.  See
+      // rel/doc/radix-mmu/04-integration.md 4.4 for the SPR-collision analysis.
       // Only PTCR[55:12] is used, as the partition-table base; PATS and LPID are
       // ignored, exactly as upstream Microwatt (mmu.vhdl:1846).
       parameter [0:9]                      Spr_Addr_PTCR = 10'b0111010000;
@@ -2214,7 +2215,8 @@ assign xu_mm_derat_mmucr1_we_d = xu_mm_derat_mmucr1_we;
    // TLB0CFG[44]: radix enable.  Boot-config latch, the exact analogue of
    // tlb0cfg_ind which gates the Book-E E.PT walker. 0 at reset, so an
    // unmodified A2O still boots Book-E.  MMUCR1 and MMUCR2 are both fully
-   // assigned (PLAN.md 3.6), so this reserved TLB0CFG bit is the free slot.
+   // assigned (rel/doc/radix-mmu/04-integration.md 4.2), so this reserved
+   // TLB0CFG bit is the free slot.
    assign tlb0cfg_radix = tlb0cfg_q[44];
    assign tlb0cfg_pt = tlb0cfg_q[45];
    assign tlb0cfg_ind = tlb0cfg_q[46];

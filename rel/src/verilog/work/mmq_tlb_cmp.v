@@ -5086,7 +5086,8 @@ module mmq_tlb_cmp(
       // MISS.  The condition therefore mirrors tlb_miss_d rather than
       // tlb_htw_req_valid: erat request, not a ptereload pass, all page-size probes
       // done (endflag), no way hit, no parity error, and -- the load-bearing term --
-      // nonspec, so a speculative miss never leaves the core (PLAN.md 5.1 rule 1).
+      // nonspec, so a speculative miss never leaves the core
+      // (rel/doc/radix-mmu/05-ooo-safety.md 5.2, rule 1).
       // When RXE is set this replaces the TLB-miss exception: mmq_rtw walks and then
       // returns either a translation or a fault through the normal ptereload path.
       assign tlb_rtw_req_valid = ( mmucr1_rxe == 1'b1 &

@@ -36,9 +36,10 @@
 //* left untouched.  Selected by MMUCR1[RXE]; mmq.v muxes the LSU request
 //* and ptereload interfaces between the two.
 //*
-//* See PLAN.md section 4 (design) and section 5 (out-of-order constraints).
-//* The five P0 constraints from PLAN.md section 5 are implemented here and
-//* marked with "P0-n" comments:
+//* See rel/doc/radix-mmu/02-fsm.md (design) and 05-ooo-safety.md
+//* (out-of-order constraints).  The five P0 constraints from
+//* 05-ooo-safety.md 5.3 are implemented here and marked with
+//* "P0-n" comments:
 //*   P0-1  per-context killed bit, tested at every level boundary
 //*   P0-2  R/C are checked, never written back
 //*   P0-3  ptereload/derat_rel returned on EVERY termination path
@@ -118,7 +119,7 @@ module mmq_rtw(
    input                                  inv_as,
    input                                  inv_all,
 
-   // ---- radix root pointers (PLAN.md 4.5 item 5) ----
+   // ---- radix root pointers (see rel/doc/radix-mmu/02-fsm.md 2.5) ----
    input [0:63]                           ptcr,
    input                                  ptcr_wr,          // mtspr PTCR: drop all cached roots
    input                                  pid_wr,           // mtspr PID:  drop cached quadrant-0 root
@@ -187,7 +188,7 @@ module mmq_rtw(
 
       // A2O TLB page-size codes.  Note the encoding is log4(size/1KB), so it can
       // express only power-of-4 sizes.  2MB is NOT representable.  Furthermore
-      // mmq_tlb_cmp.v:3486 builds the way size field as {1'b0, pte[ptepos_size+0:+2]},
+      // mmq_tlb_cmp.v:3491 builds the way size field as {1'b0, pte[ptepos_size+0:+2]},
       // so only codes 0000-0111 survive the ptereload path -- 1GB is unreachable too.
       // Radix leaf sizes are therefore DEMOTED to the largest representable size
       // that is a sub-page of the real leaf.  Demotion is always architecturally
@@ -323,7 +324,7 @@ module mmq_rtw(
       // hand-unrolling it twice is how transcription bugs get in.  Everything
       // else -- tri_rlmreg_p scan latches, explicit sensitivity lists, full
       // default-assignment prologues, `[0:N]` MSB-first vectors -- follows the
-      // house style exactly (PLAN.md section 4.3).
+      // house style of mmq_tlb_ctl.v and mmq_htw.v exactly.
 
       wire                                   ctx_valid_d    [0:`RTW_NUM_CTX-1];
       wire                                   ctx_valid_q    [0:`RTW_NUM_CTX-1];
@@ -452,12 +453,12 @@ module mmq_rtw(
       genvar       k;
 
       //---------------------------------------------------------------------
-      // Shared: cached radix roots (PLAN.md 4.5 item 5)
+      // Shared: cached radix roots (rel/doc/radix-mmu/02-fsm.md 2.5)
       //---------------------------------------------------------------------
       // Microwatt caches the partition-table entry (r.prtbl) and the two quadrant
       // roots (r.pgtbl0/r.pgtbl3) with valid bits, and drops them on mtspr
       // PTCR/PID (mmu.vhdl:1544-1560).  Doing the same here matters far more in
-      // A2O than it does in Microwatt: PLAN.md section 5 P0-5 shows the MMU holds
+      // A2O than in Microwatt: 05-ooo-safety.md P0-5 shows the MMU holds
       // exactly one LSU credit token, so every table read we can skip is a whole
       // L2 round trip removed from the critical path.
 
@@ -524,8 +525,8 @@ module mmq_rtw(
 
       // Flattened out of the unpacked arrays on purpose: a variable index into an
       // unpacked array read inside always@(*) does not yield a dependable
-      // sensitivity list, which is the same class of bug PLAN.md 4.3 rule 4 warns
-      // about for hand-written Verilog-1995 lists.
+      // sensitivity list, which is the same class of bug a hand-written Verilog-1995 list
+      // is prone to when it goes stale.
       wire ld_req0, ld_req1, ld_req_any, arb_pref;
       assign ld_req0    = ctx_seq_load_req[0];
       assign ld_req1    = ctx_seq_load_req[1];
@@ -829,7 +830,7 @@ module mmq_rtw(
          // leaf install: size demotion
          //------------------------------------------------------------------
          // A2O's 4-bit size code is log4(size/1KB) so it cannot express 2MB, and
-         // mmq_tlb_cmp.v:3486 builds the way size as {1'b0, pte[ptepos_size+0:+2]},
+         // mmq_tlb_cmp.v:3491 builds the way size as {1'b0, pte[ptepos_size+0:+2]},
          // which drops everything above 16MB. Radix leaves are therefore installed
          // at the largest representable sub-page size. Always safe: a smaller page
          // maps a subset of the same translation with identical permissions.
@@ -859,7 +860,7 @@ module mmq_rtw(
          assign usxwr[5] = pde_r;                             // SR
 
          // P0-2: R and C are CHECKED, never written back. There is no store path
-         // from the MMU (lq_imq.v:107) and no pending-memory-write mechanism, so a
+         // from the MMU (lq_imq.v:110) and no pending-memory-write mechanism, so a
          // hardware R/C update would be an architecturally visible write on behalf
          // of a non-committed instruction. Software must set them, as in Microwatt.
          // Conservative: the A2O tag carries no load/store bit, so C is required
@@ -926,7 +927,7 @@ module mmq_rtw(
          //------------------------------------------------------------------
          // Sequencer
          //------------------------------------------------------------------
-         // SENSITIVITY LIST: PLAN.md 4.3 rule 4 requires an explicit Verilog-1995
+         // SENSITIVITY LIST: A2O house style is an explicit Verilog-1995
          // list because a missing entry is a silent sim/synth mismatch. Inside a
          // generate loop over arrayed context state a hand-written list is exactly
          // the thing that goes stale, so `always @(*)` is used instead -- it
@@ -1383,7 +1384,7 @@ module mmq_rtw(
       //---------------------------------------------------------------------
       // Latches
       //---------------------------------------------------------------------
-      // Scan latches, not always@(posedge) -- PLAN.md 4.3 rule 2, modelled on
+      // Scan latches, not always@(posedge) -- A2O house style, modelled on
       // mmq_tlb_ctl.v:4165-4181. Per-context latches are instantiated from a
       // generate loop with the scan offset computed as ctx_base_offset + i*CTX_STRIDE.
 
