@@ -182,10 +182,93 @@ warnings, and do not.
 ## 6.6 Reproducing
 
 ```bash
-rel/src/verilog/sim/run_rtw_tests.sh
+cd rel/src/verilog
+./sim/run_rtw_tests.sh
 ```
 
 Runs lint and both benches in about five seconds. Requires `verilator` and `iverilog`.
+Captured verbatim, this run:
+
+```
+== lint ==
+%Warning-UNUSED: work/mmq_rtw.v:97:33: Bits of signal are not used: 'tlb_ctl_tag2_flush'[0]
+                                     : ... In instance mmq_rtw
+   97 |    input [0:2-1]                tlb_ctl_tag2_flush,
+      |                                 ^~~~~~~~~~~~~~~~~~
+                 ... Use "/* verilator lint_off UNUSED */" and lint_on around source to disable this message.
+%Warning-UNUSED: work/mmq_rtw.v:98:33: Bits of signal are not used: 'tlb_ctl_tag3_flush'[0]
+                                     : ... In instance mmq_rtw
+   98 |    input [0:2-1]                tlb_ctl_tag3_flush,
+      |                                 ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSED: work/mmq_rtw.v:99:33: Bits of signal are not used: 'tlb_ctl_tag4_flush'[0]
+                                     : ... In instance mmq_rtw
+   99 |    input [0:2-1]                tlb_ctl_tag4_flush,
+      |                                 ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSED: work/mmq_rtw.v:106:32: Bits of signal are not used: 'tlb_tag2'[0:120]
+                                      : ... In instance mmq_rtw
+  106 |    input [0:122-1]             tlb_tag2,
+      |                                ^~~~~~~~
+%Warning-UNUSED: work/mmq_rtw.v:107:33: Bits of signal are not used: 'tlb_tag5_except'[0]
+                                      : ... In instance mmq_rtw
+  107 |    input [0:2-1]                tlb_tag5_except,
+      |                                 ^~~~~~~~~~~~~~~
+%Warning-UNUSED: work/mmq_rtw.v:123:43: Bits of signal are not used: 'ptcr'[42:63,0:11]
+                                      : ... In instance mmq_rtw
+  123 |    input [0:63]                           ptcr,
+      |                                           ^~~~
+== bit-math vs Microwatt reference ==
+=== ported bit-math vs Microwatt reference model ===
+PASS: 400 random vectors, all four generators match
+== end-to-end walk ==
+=== mmq_rtw end-to-end walk ===
+    [L2] load 0 addr=00000100008 data=0000000000200009
+    [L2] load 1 addr=00000200000 data=4000000000300029
+    [L2] load 2 addr=00000300008 data=8000000000400009
+    [L2] load 3 addr=00000400010 data=8000000000500009
+    [L2] load 4 addr=00000500018 data=8000000000600009
+    [L2] load 5 addr=00000600020 data=c000000000800187
+  loads issued = 6 (expect 6: PATE1 + PRTE0 + 4 levels)
+  RPN correct: 00000800
+  usxwr correct: 111111
+    [L2] load 0 addr=00000300008 data=8000000000400009
+    [L2] load 1 addr=00000400010 data=8000000000500009
+    [L2] load 2 addr=00000500018 data=8000000000600009
+    [L2] load 3 addr=00000600020 data=c000000000800187
+  loads issued = 4 (expect 4: roots cached)
+    [L2] load 4 addr=00000300008 data=8000000000400009
+    [L2] load 5 addr=00000400010 data=8000000000500009
+    [L2] load 6 addr=00000500018 data=8000000000600009
+    [L2] load 7 addr=00000600020 data=0000000000000000
+  pt_fault raised correctly, V=0 install
+    [L2] load 8 addr=00000300008 data=8000000000400009
+    [L2] load 9 addr=00000400010 data=8000000000500009
+    [L2] load 10 addr=00000500018 data=8000000000600009
+    [L2] load 11 addr=00000600020 data=c000000000800087
+  rc_err raised correctly (R=0, hardware never sets it)
+    [L2] load 12 addr=00000300008 data=8000000000400009
+    [L2] load 13 addr=00000400010 data=8000000000500009
+    [L2] load 14 addr=00000500018 data=8000000000600002
+  badtree raised correctly
+  segerror raised correctly for quadrant 1
+    [L2] load 15 addr=00000300008 data=8000000000400009
+    [dbg] before flush: seq0=0101 valid0=1 killed0=0 resv0=1 pte_valid=0
+    [dbg] at flush: kill_now0=1 killed0=1
+    [dbg] after flush: seq0=1111 killed0=1
+  flush mid-walk: reload returned with V=0, EMQ freed (P0-1/P0-3 OK)
+    [L2] load 16 addr=00000300008 data=8000000000400009
+    [L2] load 17 addr=00000400010 data=8000000000500009
+  invalidate mid-walk: walk discarded, reload returned (P0-4 OK)
+  radix disabled: no loads, no reload -- Book-E path unaffected
+  guest-mode walk refused with lrat_miss, nothing installed (P2-11 OK)
+  watchdog fired after 4097 cycles, mchk raised, EMQ freed (P1-7 OK)
+    [L2] load 0 addr=00000300008 data=8000000000400009
+
+PASS: 11 walk scenarios, no failures
+== all mmq_rtw tests passed ==
+```
+
+The six `UNUSED` warnings are the ones named in [§6.5](#65-lint) — ports carried for
+interface parity that this module does not consume every bit of. Zero `%Error` lines.
 
 To confirm the integration introduced no new lint errors:
 
